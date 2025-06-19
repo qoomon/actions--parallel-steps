@@ -80,15 +80,6 @@ export async function run(stage) {
 
         return steps;
     });
-
-    const stagePromise = new CompletablePromise();
-    DEBUG && console.log(colorizePurple(`__::Act::${stage}::Start::`));
-
-    if (stage === 'Pre') {
-        await startAct(steps, githubToken, actLogFilePath);
-        await fs.appendFile(errorStepsFilePath, ''); // ensure the file does exist
-    }
-
     const stepResults = steps.map(() => ({
         status: 'Queued',
         output: '',
@@ -101,12 +92,28 @@ export async function run(stage) {
             'GITHUB_STEP_SUMMARY': '',
         },
     }));
-    await fs.readFile(errorStepsFilePath).then(async (buffer) => {
-        const errorSteps = buffer.toString().split('\n').filter((line) => !!line);
+
+    const stagePromise = new CompletablePromise();
+    DEBUG && console.log(colorizePurple(`__::Act::${stage}::Start::`));
+
+    if (stage === 'Pre') {
+        await fs.writeFile(actLogFilePath, '');
+
+        await startAct(steps, githubToken, actLogFilePath);
+    } else {
+        const skipped = ! await fs.access(actLogFilePath).then(() => true).catch(() => false);
+        if(skipped) {
+            core.debug(`Skipping ${stage} stage`);
+            return;
+        }
+
+        await fs.appendFile(errorStepsFilePath, ''); // ensure the error steps file exists
+        const errorStepsFileContent = await fs.readFile(errorStepsFilePath).then((buffer) => buffer.toString());
+        const errorSteps = errorStepsFileContent.split('\n').filter((line) => !!line);
         for (const stepIndex of errorSteps) {
             await endStep(stepIndex, 'error');
         }
-    })
+    }
 
     let concurrentLogGroupOpen = false
 
