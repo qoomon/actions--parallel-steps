@@ -7,6 +7,7 @@ jobs:
     timeout-minutes: 1
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - uses: qoomon/actions--parallel-steps@main
         id: parallel-steps
         with:

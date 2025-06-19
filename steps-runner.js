@@ -93,9 +93,6 @@ export async function run(stage) {
         },
     }));
 
-    const stagePromise = new CompletablePromise();
-    DEBUG && console.log(colorizePurple(`__::Act::${stage}::Start::`));
-
     if (stage === 'Pre') {
         await fs.writeFile(actLogFilePath, '');
 
@@ -114,6 +111,9 @@ export async function run(stage) {
             await endStep(stepIndex, 'error');
         }
     }
+
+    const stagePromise = new CompletablePromise();
+    DEBUG && console.log(colorizePurple(`__::Act::${stage}::Start::`));
 
     let concurrentLogGroupOpen = false
 
