@@ -396,6 +396,7 @@ async function startAct(steps, githubToken, logFilePath) {
             "--eventpath", process.env["GITHUB_EVENT_PATH"],
             "--actor", process.env["GITHUB_ACTOR"],
             "--secret", `GITHUB_TOKEN=${githubToken}`,
+            "--no-skip-checkout",
 
             // TODO chek if needed
             ...Object.entries(ACTION_ENV)
