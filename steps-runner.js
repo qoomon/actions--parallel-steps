@@ -16,7 +16,7 @@ import {
     DEBUG,
     TRACE
 } from "./act-interceptor/utils.js";
-import core from "@actions/core";
+import core, {ExitCode} from "@actions/core";
 import {EOL} from "node:os";
 import TailFile from "@logdna/tail-file";
 
@@ -561,4 +561,18 @@ function formatMilliseconds(milliseconds) {
     parts.push(`${seconds}s`);
 
     return parts.join(" ");
+}
+
+export async function installDependencies() {
+    const githubToken = core.getInput("token", {required: true});
+    // Install gh-act extension
+    const actVersionTag = 'v0.2.78';
+    console.log(`Installing gh cli extension nektos/gh-act@${actVersionTag} ...`);
+    child_process.execSync(`gh extension install https://github.com/nektos/gh-act --pin ${actVersionTag}`, {
+        stdio: 'inherit',
+        env: {...process.env, GH_TOKEN: githubToken}
+    });
+    child_process.execSync("gh act --version", {
+        stdio: 'inherit',
+    });
 }
