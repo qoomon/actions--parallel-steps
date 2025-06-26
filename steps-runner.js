@@ -295,6 +295,7 @@ export async function run(stage) {
         if (Object.values(stepResults).every((result) => result.status === 'Completed')) {
             if (concurrentLogGroupOpen) {
                 core.endGroup();
+              console.log('');
             }
             DEBUG && console.log(colorizePurple(`__::Act::${stage}::End::`));
 
@@ -303,13 +304,13 @@ export async function run(stage) {
 
                 // log aggregated step results
                 if (stepResult.result) {
-                    console.log('')
                     core.startGroup(' ' +
                         buildStepLogPrefix('End', stepResult.result) +
                         buildStepHeadline(stage, step, stepResult)
                     );
                     console.log(removeTrailingNewLine(stepResult.output));
                     core.endGroup();
+                    console.log('')
                 }
 
                 // command files

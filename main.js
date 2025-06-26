@@ -8,18 +8,11 @@ await installDependencies().catch((error) => {
     }
 });
 
-await run('Pre').catch((error) => {
+await run('Pre')
+  .then(() => run('Main'))
+  .catch((error) => {
     process.exitCode = ExitCode.Failure;
     if (error?.message) {
         core.setFailed(error.message);
     }
-});
-
-console.log('');
-
-await run('Main').catch((error) => {
-    process.exitCode = ExitCode.Failure;
-    if (error?.message) {
-        core.setFailed(error.message);
-    }
-});
+})
