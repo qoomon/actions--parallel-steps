@@ -27,7 +27,8 @@ jobs:
       # access parallel steps outputs            
       - run: echo Hello $RECIPIENT
         env:
-          RECIPIENT: ${{ steps.parallel-steps.outputs.greetings--recipient }} # or just ${{ steps.parallel-steps.outputs.recipient }}
+          RECIPIENT: ${{ steps.parallel-steps.outputs.greetings--recipient }}
+           # or just ${{ steps.parallel-steps.outputs.recipient }}
 ```
 
 > [!Note]
