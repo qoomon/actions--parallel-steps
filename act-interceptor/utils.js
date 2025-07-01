@@ -5,7 +5,10 @@ export const TRACE = process.env["RUNNER_DEBUG"] === "2";
 export const DEBUG = process.env["RUNNER_DEBUG"] === "1" || TRACE;
 export const LOCAL = process.env["RUNNER_LOCAL"] === "1";
 
-export const ACTION_STEP_TEMP_DIR = `${process.env["RUNNER_TEMP"]}/${process.env["X_GITHUB_ACTION"] ?? process.env["GITHUB_ACTION"]}`;
+// WORKAROUND: see startAct() in steps-runner.js
+process.env["GITHUB_ACTION"] = process.env["X_GITHUB_ACTION"] ?? process.env["GITHUB_ACTION"];
+
+export const ACTION_STEP_TEMP_DIR = `${process.env["RUNNER_TEMP"]}/${process.env["GITHUB_ACTION"]}`;
 {
     if (!process.env["RUNNER_TEMP"] || !process.env["GITHUB_ACTION"]) {
         throw new Error("RUNNER_TEMP and GITHUB_ACTION environment variables are required "

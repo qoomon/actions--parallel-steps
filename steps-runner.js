@@ -12,11 +12,12 @@ import {
     colorizeGray,
     colorizePurple,
     colorizeRed,
+    colorizeYellow,
     CompletablePromise,
     DEBUG,
     TRACE
 } from "./act-interceptor/utils.js";
-import core, {ExitCode} from "@actions/core";
+import core from "@actions/core";
 import {EOL} from "node:os";
 import TailFile from "@logdna/tail-file";
 
@@ -40,9 +41,15 @@ const ACTION_ENV = Object.fromEntries(Object.entries(process.env).filter(([key])
         ].includes(key);
 }));
 
+export const GH_ACT_VERSION = '0.2.79';
+
 export async function run(stage) {
     const githubToken = core.getInput("token", {required: true});
     const steps = getInput("steps", {required: true}, (value) => {
+        /** @type {Array<{
+         * id?: string,
+         * name?: string,
+         * }>} */
         let steps;
         try {
             steps = YAML.parse(value);
@@ -56,7 +63,7 @@ export async function run(stage) {
             process.exit(1);
         }
 
-        if (steps.lenght > os.cpus().length) {
+        if (steps.length > os.cpus().length) {
             core.setFailed(`Invalid steps input - Parallel steps are limited to the number of available CPUs (${os.cpus().length})`);
             process.exit(1);
         }
@@ -80,17 +87,20 @@ export async function run(stage) {
 
         return steps;
     });
+
     const stepResults = steps.map(() => ({
         status: 'Queued',
         output: '',
+        outputGroup: false,
         result: null,
         executionTime: null,
         commandFiles: {
             'GITHUB_OUTPUT': {},
             'GITHUB_ENV': {},
             'GITHUB_PATH': [],
-            'GITHUB_STEP_SUMMARY': '',
+            'GITHUB_STEP_SUMMARY': [],
         },
+        secrets: [],
     }));
 
     if (stage === 'Pre') {
@@ -98,8 +108,8 @@ export async function run(stage) {
 
         await startAct(steps, githubToken, actLogFilePath);
     } else {
-        const skipped = ! await fs.access(actLogFilePath).then(() => true).catch(() => false);
-        if(skipped) {
+        const skipped = !await fs.access(actLogFilePath).then(() => true).catch(() => false);
+        if (skipped) {
             core.debug(`Skipping ${stage} stage`);
             return;
         }
@@ -115,12 +125,12 @@ export async function run(stage) {
     const stagePromise = new CompletablePromise();
     DEBUG && console.log(colorizePurple(`__::Act::${stage}::Start::`));
 
-    let concurrentLogGroupOpen = false
+    let concurrentLogGroup = false
 
     function concurrentLog(...args) {
-        if (!concurrentLogGroupOpen) {
+        if (!concurrentLogGroup) {
             core.startGroup("Concurrent logs");
-            concurrentLogGroupOpen = true;
+            concurrentLogGroup = true;
         }
         console.log(...args);
     }
@@ -161,32 +171,85 @@ export async function run(stage) {
             // actual step lines
             if (line.stepID?.[0] === stepId) {
                 if (!line.raw_output) {
-                    if (line.msg.trimEnd().startsWith("  ❓  ::group::")
-                        || line.msg.trimEnd().startsWith("  ❓  ::endgroup::")) {
-                        const msg = '​' + line.msg.trimEnd()
-                            .replace(/^ {2}❓ {2}/, '');
-                        concurrentLog(
-                            buildStepLogPrefix() +
-                            buildStepIndicator(stepIndex) +
-                            msg,
-                        );
-                        stepResult.output += msg + EOL;
-                    } else if (line.event === 'Start') {
+                    if (line.event === 'Start') {
                         await startStep(stepIndex);
                     } else if (line.command) {
                         // command files
                         switch (line.command) {
+                            case 'group': {
+                                const msg = `▼ ${line.arg}`;
+                                concurrentLog(
+                                    buildStepLogPrefix() +
+                                    buildStepIndicator(stepIndex) +
+                                    msg,
+                                );
+                                stepResult.output += msg + EOL;
+                                stepResult.outputGroup = true
+                                break;
+                            }
+                            case 'endgroup':
+                                stepResult.outputGroup = false
+                                break;
+
+                            case 'add-matcher':
+                            case 'remove-matcher':
+                                stepResult.output += line.raw + EOL;
+                                break;
+
                             case 'set-output':
                                 stepResult.commandFiles['GITHUB_OUTPUT'][line.name] = line.arg;
                                 break;
                             case 'set-env':
-                                stepResult.commandFiles['GITHUB_ENV'][line.name] = line.arg;
+                                // skip GITHUB_ENV variables that are passed to and set by the interceptor action, see startAct()
+                                if (!Object.keys(ACTION_ENV).includes(line.arg)) {
+                                    stepResult.commandFiles['GITHUB_ENV'][line.name] = line.arg;
+                                }
                                 break;
                             case 'add-path':
                                 stepResult.commandFiles['GITHUB_PATH'].push(line.arg);
                                 break;
+                            case 'summary':
+                                stepResult.commandFiles['GITHUB_STEP_SUMMARY'].push(line.content);
+                                break;
+                            case 'add-mask':
+                                stepResult.secrets.push(line.arg);
+                                break;
+
+                            case 'warning':
+                            case 'error':
+                            case 'debug': {
+                                let concurrentLogMsg = line.raw.replace(/^::[^:]+::/, '');
+                                switch (line.command) {
+                                    case 'warning':
+                                        concurrentLogMsg = colorizeYellow(concurrentLogMsg);
+                                        break;
+                                    case 'error':
+                                        concurrentLogMsg = colorizeRed(concurrentLogMsg);
+                                        break;
+                                    case 'debug':
+                                        concurrentLogMsg = colorizeGray(concurrentLogMsg);
+                                        break;
+                                }
+                                concurrentLog(
+                                    buildStepLogPrefix() +
+                                    buildStepIndicator(stepIndex) +
+                                    (stepResult.outputGroup ? `  ${concurrentLogMsg}` : concurrentLogMsg),
+                                );
+
+                                stepResult.output += (stepResult.outputGroup
+                                    ? line.raw.replace(/(::[^:]+::)/, '$1  ')
+                                    : line.raw) + EOL;
+                                break;
+                            }
+
                             default:
-                                core.warning('Unexpected command: ' + line.msg);
+                                core.warning('Unsupported command: ' + line.command);
+                                concurrentLog(
+                                    buildStepLogPrefix() +
+                                    buildStepIndicator(stepIndex) +
+                                    line.raw,
+                                );
+                                stepResult.output += line.raw + EOL;
                         }
                     } else if (line.event === 'End') {
                         stepResult.executionTime = line.executionTime;
@@ -199,19 +262,30 @@ export async function run(stage) {
                             concurrentLog(
                                 buildStepLogPrefix() +
                                 buildStepIndicator(stepIndex) +
-                                '::error::' + errorMessage,
+                                (stepResult.outputGroup ? `  ${colorizeRed(errorMessage)}` : colorizeRed(errorMessage)),
                             );
-                            stepResult.output += '::error::' + errorMessage + EOL;
+                            stepResult.output += '::error::' + (stepResult.outputGroup ? `  ${errorMessage}` : errorMessage) + EOL;
                             await endStep(stepIndex, 'error');
                         }
                     }
                 } else {
+                    // raw output lines
+                    let concurrentLogMsg = line.msg;
+                    if (concurrentLogMsg.startsWith('[command]')) {
+                        concurrentLogMsg = concurrentLogMsg.replace(/^\[command]/, '');
+                        concurrentLogMsg = colorizeBlue(concurrentLogMsg);
+                    }
                     concurrentLog(
                         buildStepLogPrefix() +
                         buildStepIndicator(stepIndex) +
-                        line.msg,
+                        (stepResult.outputGroup ? `  ${concurrentLogMsg}` : concurrentLogMsg),
                     );
-                    stepResult.output += line.msg + EOL;
+
+                    let outputMsg = line.msg;
+                    if (outputMsg.startsWith('[command]')) {
+                        outputMsg = colorizeBlue(outputMsg.replace(/^\[command]/, ''));
+                    }
+                    stepResult.output += (stepResult.outputGroup ? `  ${outputMsg}` : outputMsg) + EOL;
                 }
             } else if (line.raw_output) {
                 const interceptorEvent = line.msg.match(/^__::Interceptor::(?<stage>[^:]+)::(?<type>[^:]+)::(?<value>[^:]*)?/)?.groups;
@@ -293,9 +367,9 @@ export async function run(stage) {
 
         // check if the stage has been completed
         if (Object.values(stepResults).every((result) => result.status === 'Completed')) {
-            if (concurrentLogGroupOpen) {
+            if (concurrentLogGroup) {
                 core.endGroup();
-              console.log('');
+                console.log('');
             }
             DEBUG && console.log(colorizePurple(`__::Act::${stage}::End::`));
 
@@ -318,18 +392,27 @@ export async function run(stage) {
                     DEBUG && console.log(`Set output: ${key}=${value}`);
                     core.setOutput(key, value);
                     if (step.id) {
-                        const stepKey = step.id + '-' + key;
+                        const stepKey = step.id + '--' + key;
                         DEBUG && console.log(`Set output: ${stepKey}=${value}`);
                         core.setOutput(stepKey, value);
                     }
                 });
                 Object.entries(stepResult.commandFiles['GITHUB_ENV']).forEach(([key, value]) => {
-                    DEBUG && console.log(`Export variable: ${key}=${value}`);
+                    DEBUG && console.log(`Set env: ${key}=${value}`);
                     core.exportVariable(key, value);
                 });
                 stepResult.commandFiles['GITHUB_PATH'].forEach((path) => {
                     DEBUG && console.log(`Add path: ${path}`);
                     core.addPath(path);
+                });
+                stepResult.commandFiles['GITHUB_STEP_SUMMARY'].forEach((summary) => {
+                    DEBUG && console.log(`Step summary: ${summary}`);
+                    core.summary.addRaw(summary, true).write();
+                });
+
+                stepResult.secrets.forEach((secret) => {
+                    DEBUG && console.log(`Add mask: ***`);
+                    core.setSecret(secret);
                 });
             });
 
@@ -388,6 +471,7 @@ async function startAct(steps, githubToken, logFilePath) {
     await fs.writeFile(workflowFilePath, YAML.stringify(workflow));
 
     const actLogFile = await fs.open(logFilePath, 'w');
+    // noinspection JSCheckFunctionSignatures
     const actProcess = child_process.spawn(
         "gh", ["act", "--workflows", workflowFilePath,
             "--concurrent-jobs", steps.length,
@@ -425,8 +509,30 @@ function getInput(name, options, fn) {
     return fn(value);
 }
 
+/**
+ * Parses a line from the act log file.
+ * @param line {string} The line to parse.
+ */
 function parseActLine(line) {
+    /** @type {{
+     event: string,
+     level: string,
+     msg: string,
+     raw?: string,
+     error?: string,
+     jobID?: string,
+     jobResult?: string,
+     stepID?: string,
+     stepResult?: string,
+     raw_output?: string,
+     executionTime?: number,
+     command?: string,
+     arg?: string,
+     name?: string,
+     content?: string,
+     }} */
     let result = {
+        event: 'Log',
         level: 'error',
         error: line,
         msg: '',
@@ -438,6 +544,7 @@ function parseActLine(line) {
         const lineMatch = line.match(/^level=(?<level>[\w-]+)\smsg=(?<msg>.*)/);
         if (lineMatch) {
             result = {
+                event: 'Log',
                 level: lineMatch.groups.level,
                 msg: lineMatch.groups.msg,
             };
@@ -445,6 +552,7 @@ function parseActLine(line) {
             const error = line.match(/^Error: (?<error>.*)\. (?<msg>.*)/)?.groups;
             if (error) {
                 result = {
+                    event: 'Log',
                     level: 'error',
                     error: error.error,
                     msg: error.msg,
@@ -453,6 +561,7 @@ function parseActLine(line) {
                 const msgMatch = error.msg.match(/(?<msg>.*)for job:(?<jobID>\w+) step:(?<step>\d+)$/);
                 if (msgMatch) {
                     result = {
+                        event: 'Log',
                         level: 'error',
                         error: error.error,
                         msg: msgMatch.groups.msg,
@@ -464,27 +573,22 @@ function parseActLine(line) {
         }
     }
 
-    // normalize level to github core log levels
-    if (result.level === 'warn') result.level = 'warning';
-
-    result.msg = result.msg.trimEnd();
-
-    if (!result.raw_output) {
+    if (result.command) {
+        result.event = 'Command';
+    } else if (!result.raw_output) {
         if (result.msg.startsWith('⭐ Run ')) {
             result.event = 'Start';
         } else if (result.stepResult || result.jobResult) {
             result.event = 'End';
-        } else if (result.msg.startsWith('  ⚙  ::')) {
-            // command files
-            const command = result.msg.match(/^ {2}⚙ {2}::(?<command>[^:]+)::\s*(?:(?<name>[\w-]+)=)?(?<arg>.*)$/).groups;
-            if (!command) {
-                throw new Error(`Unexpected command line: ${line.msg}`);
-            }
-            result.command = command.command;
-            result.name = command.name;
-            result.arg = command.arg;
-            // TODO step-summary
         }
+    }
+
+    // normalize level to github core log levels
+    if (result.level === 'warn') result.level = 'warning';
+
+    result.msg = result.msg.trimEnd();
+    if (result.raw) {
+        result.raw = result.raw.replace(/\n$/, '');
     }
 
     return result;
@@ -512,10 +616,10 @@ function buildStepHeadline(actStage, step, jobResult = null) {
 
 function buildStepLogPrefix(event, stepResult) {
     if (event === 'Start') {
-        return colorizeGray('❯  ');
+        return colorizeGray('❯ ');
     }
     if (event === 'Log' || !event) {
-        return colorizeGray('   ');
+        return colorizeGray('  ');
     }
     if (event === 'End') {
         // no job result indicates the step action has no stage implementation
@@ -567,7 +671,7 @@ function formatMilliseconds(milliseconds) {
 export async function installDependencies() {
     const githubToken = core.getInput("token", {required: true});
     // Install gh-act extension
-    const actVersionTag = 'v0.2.78';
+    const actVersionTag = `v${GH_ACT_VERSION}`;
     console.log(`Installing gh cli extension nektos/gh-act@${actVersionTag} ...`);
     child_process.execSync(`gh extension install https://github.com/nektos/gh-act --pin ${actVersionTag}`, {
         stdio: 'inherit',

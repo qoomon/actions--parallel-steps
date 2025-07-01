@@ -27,7 +27,7 @@ jobs:
       # access parallel steps outputs            
       - run: echo Hello $RECIPIENT
         env:
-          RECIPIENT: ${{ steps.parallel-steps.outputs.greetings-recipient }}
+          RECIPIENT: ${{ steps.parallel-steps.outputs.greetings--recipient }} # or just ${{ steps.parallel-steps.outputs.recipient }}
 ```
 
 > [!Note]
@@ -35,10 +35,7 @@ jobs:
 
 ## Workflow Run Examples
 https://github.com/qoomon/actions--parallel-steps/actions/workflows/example.yaml
-
-## Known Issues
-- `GITHUB_STEP_SUMMARY` is not supported by latest release of `act`, however the [feature #2759](https://github.com/nektos/act/pull/2761) has be implemented and merged to main branch already. New act version will be released on 1st of July
-
+  
 ## Development
 
 - run locally

@@ -26,9 +26,23 @@ jobs:
               uses: actions/github-script@v7
               with:
                 script: |
+                  core.info('This is a info')
+                  core.warning('This is a warning')
+                  core.error('This is a error')
+                  core.debug('This is a dbug')
+            
+                  core.startGroup('A Group')
+                    core.info('This is a info')
+                    core.warning('This is a warning')
+                    core.error('This is a error')
+                    core.debug('This is a dbug')
+                  core.endGroup()
+                  
+                  core.addPath('./test-command-CCC')
                   core.exportVariable('TEST_VARIABLE', 'AAA')
                   core.setOutput('test-output', 'BBB')
-                  core.addPath('./test-command')
+                  core.addPath('./test-command-CCC')
+                  core.summary.addHeading('Test Summary').write()
       #            - uses: actions/setup-java@v4
       #              with:
       #                distribution: 'temurin' # See 'Supported distributions' for available options
@@ -37,7 +51,7 @@ jobs:
           ls -lachs
           echo "TEST_VARIABLE:                                         $TEST_VARIABLE"
           echo "steps.parallel-steps.outputs.test-output:              ${{ steps.parallel-steps.outputs.test-output }}"
-          echo "steps.parallel-steps.outputs.command-file.test-output: ${{ steps.parallel-steps.outputs.command-file-test-output }}"
+          echo "steps.parallel-steps.outputs.command-file--test-output: ${{ steps.parallel-steps.outputs.command-file--test-output }}"
           
             
 
