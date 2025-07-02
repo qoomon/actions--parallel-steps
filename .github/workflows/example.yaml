@@ -26,12 +26,14 @@ jobs:
               with:
                 script: |
                   core.info('This is a info')
+                  core.notice('This is a notice')
                   core.warning('This is a warning')
                   core.error('This is a error')
                   core.debug('This is a dbug')
             
                   core.startGroup('A Group')
                     core.info('This is a info')
+                    core.notice('This is a notice')
                     core.warning('This is a warning')
                     core.error('This is a error')
                     core.debug('This is a dbug')

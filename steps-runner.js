@@ -10,7 +10,6 @@ import {
     colorizeBlue,
     colorizeCyan,
     colorizeGray,
-    colorizeLightBlue,
     colorizePurple,
     colorizeRed,
     colorizeYellow,
