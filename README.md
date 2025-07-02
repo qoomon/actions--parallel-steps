@@ -70,7 +70,7 @@ For each step with an `id`, you can access the step's outcome and conclusion:
 - `skipped`: The step was skipped or didn't run
 
 > [!Note]
-> Currently, `outcome` and `conclusion` return the same values. In the future, `conclusion` may differ from `outcome` when `continue-on-error` is used.
+> Currently, `outcome` and `conclusion` return the same values. The `outcome` represents the actual result of the step execution. When using `continue-on-error: true`, the step's outcome will still be `failure` if it fails, allowing you to detect and handle failed steps as shown in the example above.
 ```
 
 > [!Note]
