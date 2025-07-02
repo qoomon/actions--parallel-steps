@@ -15,7 +15,7 @@ jobs:
         with:
           steps: |
             - run: echo Step0
-            - run: echo Step1
+            - uses: actions/checkout@v4
             - uses: actions/github-script@v7
               id: greetings
               with:
