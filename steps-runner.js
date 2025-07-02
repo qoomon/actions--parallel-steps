@@ -87,12 +87,18 @@ export async function run(stage) {
 
         return steps;
     });
-
     const stepResults = steps.map(() => ({
         status: 'Queued',
         output: '',
         outputGroup: false,
-        result: null,
+        outcome: null,
+        get conclusion() {
+            if (this.continueOnError && this.outcome === 'failure') {
+                return 'success';
+            }
+            return this.outcome;
+        },
+        continueOnError: false,
         executionTime: null,
         commandFiles: {
             'GITHUB_OUTPUT': {},
@@ -102,6 +108,16 @@ export async function run(stage) {
         },
         secrets: [],
     }));
+
+    let concurrentLogGroup = false
+
+    function concurrentLog(...args) {
+        if (!concurrentLogGroup) {
+            core.startGroup("Concurrent logs");
+            concurrentLogGroup = true;
+        }
+        console.log(...args);
+    }
 
     if (stage === 'Pre') {
         await fs.writeFile(actLogFilePath, '');
@@ -113,26 +129,16 @@ export async function run(stage) {
             core.debug(`Skipping ${stage} stage`);
             return;
         }
-
-        await fs.appendFile(errorStepsFilePath, ''); // ensure the error steps file exists
-        const errorStepsFileContent = await fs.readFile(errorStepsFilePath).then((buffer) => buffer.toString());
-        const errorSteps = errorStepsFileContent.split('\n').filter((line) => !!line);
-        for (const stepIndex of errorSteps) {
-            await endStep(stepIndex, 'error');
-        }
     }
 
     const stagePromise = new CompletablePromise();
     DEBUG && console.log(colorizePurple(`__::Act::${stage}::Start::`));
 
-    let concurrentLogGroup = false
-
-    function concurrentLog(...args) {
-        if (!concurrentLogGroup) {
-            core.startGroup("Concurrent logs");
-            concurrentLogGroup = true;
-        }
-        console.log(...args);
+    await fs.appendFile(errorStepsFilePath, ''); // ensure the error steps file exists
+    const errorStepsFileContent = await fs.readFile(errorStepsFilePath).then((buffer) => buffer.toString());
+    const errorSteps = errorStepsFileContent.split('\n').filter((line) => !!line);
+    for (const stepIndex of errorSteps) {
+        await endStep(stepIndex, 'error');
     }
 
     // --- tail act log file
@@ -173,6 +179,12 @@ export async function run(stage) {
                 if (!line.raw_output) {
                     if (line.event === 'Start') {
                         await startStep(stepIndex);
+                    } else if (line.event === 'ContinueOnError') {
+                        stepResult.continueOnError = true;
+                    } else if (line.event === 'End') {
+                        stepResult.executionTime = line.executionTime;
+                        stepResult.outcome = line.stepResult;
+                        // NOTE: endStep(...) is called at __::interceptor:: end event
                     } else if (line.command) {
                         // command files
                         switch (line.command) {
@@ -255,10 +267,6 @@ export async function run(stage) {
                                 );
                                 stepResult.output += line.raw + EOL;
                         }
-                    } else if (line.event === 'End') {
-                        stepResult.executionTime = line.executionTime;
-                        stepResult.result = line.stepResult;
-                        // endStep(...) is called at __::interceptor:: end event
                     } else if (line.level === 'error') {
                         if (line.msg.startsWith('failed to fetch ')) {
                             const workflowStepError = line.msg.match(/GoGitActionCache (?<msg>failed to fetch \S+ with ref \S+)/)?.groups;
@@ -324,6 +332,7 @@ export async function run(stage) {
     async function startStep(stepIndex) {
         const step = steps[stepIndex];
         const stepResult = stepResults[stepIndex];
+
         stepResult.status = 'In Progress';
 
         DEBUG && console.log(buildStepLogPrefix() +
@@ -337,29 +346,24 @@ export async function run(stage) {
         );
     }
 
-    async function endStep(stepIndex, result) {
+    async function endStep(stepIndex, outcome) {
         const step = steps[stepIndex];
         const stepResult = stepResults[stepIndex];
 
-        if (stepResult.status === 'Completed') {
-            throw new Error(`Unexpected step end. Step was already completed: ${stepIndex}`);
+        if (outcome) {
+            stepResult.outcome = outcome === 'error' ? 'failure' : outcome;
+        }
+        if (stepResult.outcome === null) {
+            stepResult.outcome = 'skipped';
+        }
+        if (stepResult.outcome === 'error') {
+            await fs.appendFile(errorStepsFilePath, stepIndex + EOL);
         }
 
-        const previousStatus = stepResult.status;
-        stepResult.status = 'Completed';
-        if (result) {
-            if (result === 'error') {
-                await fs.appendFile(errorStepsFilePath, stepIndex + EOL);
-            } else if (previousStatus === 'Queued') {
-                throw new Error(`Unexpected step result. Step was not running: ${stepIndex}`);
-            }
-            stepResult.result = result;
-
-        }
-
-        if (previousStatus === 'In Progress') {
+        if (stepResult.status === 'In Progress') {
+            stepResult.status = 'Completed';
             concurrentLog(
-                buildStepLogPrefix('End', stepResult.result) +
+                buildStepLogPrefix('End', stepResult.conclusion) +
                 buildStepIndicator(stepIndex) +
                 buildStepHeadline(stage, step, stepResult),
             );
@@ -367,6 +371,11 @@ export async function run(stage) {
                 buildStepIndicator(stepIndex) +
                 colorizeBlue(`__::Step::${stage}::End::`)
             );
+        } else if (stepResult.status === 'Queued') {
+            stepResult.status = 'Completed';
+            // do nothing, the step was never started
+        } else {
+            throw new Error(`Unexpected step result. Step was not running: ${stepIndex}, was ${stepResult.status}`);
         }
 
         // check if the stage has been completed
@@ -381,9 +390,9 @@ export async function run(stage) {
                 const step = steps[stepIndex];
 
                 // log aggregated step results
-                if (stepResult.result) {
+                if (stepResult.conclusion) {
                     core.startGroup(' ' +
-                        buildStepLogPrefix('End', stepResult.result) +
+                        buildStepLogPrefix('End', stepResult.conclusion) +
                         buildStepHeadline(stage, step, stepResult)
                     );
                     console.log(removeTrailingNewLine(stepResult.output));
@@ -392,6 +401,16 @@ export async function run(stage) {
                     if (stepIndex < stepResults.length - 1) {
                         console.log('')
                     }
+                }
+
+                if (stage === 'Main' && step.id) {
+                    const outcomeKey = step.id + '--outcome';
+                    DEBUG && console.log(`Set output: ${outcomeKey}=${stepResult.outcome}`);
+                    core.setOutput(outcomeKey, stepResult.outcome);
+
+                    const conclusionKey = step.id + '--conclusion';
+                    DEBUG && console.log(`Set output: ${conclusionKey}=${stepResult.conclusion}`);
+                    core.setOutput(conclusionKey, stepResult.conclusion);
                 }
 
                 // command files
@@ -424,10 +443,13 @@ export async function run(stage) {
             });
 
             // complete stage promise
-            if (stepResults.every((result) => result.result === 'success' || !result.result)) {
+
+            if (stepResults.every((result) => result.conclusion === 'success'
+                || result.conclusion === 'skipped'
+                || !result.conclusion)) {
                 stagePromise.resolve();
             } else {
-                stagePromise.reject();
+                stagePromise.reject("step failure");
             }
         }
     }
@@ -587,6 +609,9 @@ function parseActLine(line) {
             result.event = 'Start';
         } else if (result.stepResult || result.jobResult) {
             result.event = 'End';
+        } else if (result.msg === 'Failed but continue next step') {
+            // continue-on-error: true
+            result.event = 'ContinueOnError';
         }
     }
 

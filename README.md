@@ -33,6 +33,11 @@ jobs:
            # or just ${{ steps.parallel-steps.outputs.recipient }}
 ```
 
+### Outputs
+- parallel step outputs: `${{ steps.<step_id>.outputs.<parallel_step_id>--<output_name> }}`
+- parallel step outcome: `${{ steps.<step_id>.outputs.<parallel_step_id>--outcome }}`
+- parallel step conclusion: `${{ steps.<step_id>.outputs.<parallel_step_id>--conclusion }}`
+
 > [!Note]
 > The pre-actions of the parallel steps will be executed as part of the main action of this action.
 
