@@ -113,6 +113,7 @@ export async function run(stage) {
 
     function concurrentLog(...args) {
         if (!concurrentLogGroup) {
+            console.log('');
             core.startGroup("Concurrent logs");
             concurrentLogGroup = true;
         }
@@ -386,11 +387,24 @@ export async function run(stage) {
             }
             DEBUG && console.log(colorizePurple(`__::Act::${stage}::End::`));
 
-            stepResults.forEach((stepResult, stepIndex) => {
-                const step = steps[stepIndex];
+            stepResults
+                .map((stepResult, stepIndex) => [steps[stepIndex], stepResults])
+                .forEach(([step, stepResult], completedStepsIndex, completedSteps) => {
+                    if (stage === 'Main' && step.id) {
+                        const outcomeKey = step.id + '--outcome';
+                        DEBUG && console.log(`Set output: ${outcomeKey}=${stepResult.outcome}`);
+                        core.setOutput(outcomeKey, stepResult.outcome);
 
-                // log aggregated step results
-                if (stepResult.conclusion) {
+                        const conclusionKey = step.id + '--conclusion';
+                        DEBUG && console.log(`Set output: ${conclusionKey}=${stepResult.conclusion}`);
+                        core.setOutput(conclusionKey, stepResult.conclusion);
+                    }
+
+                    if(stepResult.outcome === 'skipped') {
+                        return;
+                    }
+
+                    // log aggregated step results
                     core.startGroup(' ' +
                         buildStepLogPrefix('End', stepResult.conclusion) +
                         buildStepHeadline(stage, step, stepResult)
@@ -398,52 +412,40 @@ export async function run(stage) {
                     console.log(removeTrailingNewLine(stepResult.output));
                     core.endGroup();
 
-                    if (stepIndex < stepResults.length - 1) {
-                        console.log('')
+                    if(completedStepsIndex < completedSteps.length - 1) {
+                        console.log('');
                     }
-                }
 
-                if (stage === 'Main' && step.id) {
-                    const outcomeKey = step.id + '--outcome';
-                    DEBUG && console.log(`Set output: ${outcomeKey}=${stepResult.outcome}`);
-                    core.setOutput(outcomeKey, stepResult.outcome);
+                    // command files
+                    Object.entries(stepResult.commandFiles['GITHUB_OUTPUT']).forEach(([key, value]) => {
+                        DEBUG && console.log(`Set output: ${key}=${value}`);
+                        core.setOutput(key, value);
+                        if (step.id) {
+                            const stepKey = step.id + '--' + key;
+                            DEBUG && console.log(`Set output: ${stepKey}=${value}`);
+                            core.setOutput(stepKey, value);
+                        }
+                    });
+                    Object.entries(stepResult.commandFiles['GITHUB_ENV']).forEach(([key, value]) => {
+                        DEBUG && console.log(`Set env: ${key}=${value}`);
+                        core.exportVariable(key, value);
+                    });
+                    stepResult.commandFiles['GITHUB_PATH'].forEach((path) => {
+                        DEBUG && console.log(`Add path: ${path}`);
+                        core.addPath(path);
+                    });
+                    stepResult.commandFiles['GITHUB_STEP_SUMMARY'].forEach((summary) => {
+                        DEBUG && console.log(`Step summary: ${summary}`);
+                        core.summary.addRaw(summary, true).write();
+                    });
 
-                    const conclusionKey = step.id + '--conclusion';
-                    DEBUG && console.log(`Set output: ${conclusionKey}=${stepResult.conclusion}`);
-                    core.setOutput(conclusionKey, stepResult.conclusion);
-                }
-
-                // command files
-                Object.entries(stepResult.commandFiles['GITHUB_OUTPUT']).forEach(([key, value]) => {
-                    DEBUG && console.log(`Set output: ${key}=${value}`);
-                    core.setOutput(key, value);
-                    if (step.id) {
-                        const stepKey = step.id + '--' + key;
-                        DEBUG && console.log(`Set output: ${stepKey}=${value}`);
-                        core.setOutput(stepKey, value);
-                    }
+                    stepResult.secrets.forEach((secret) => {
+                        DEBUG && console.log(`Add mask: ***`);
+                        core.setSecret(secret);
+                    });
                 });
-                Object.entries(stepResult.commandFiles['GITHUB_ENV']).forEach(([key, value]) => {
-                    DEBUG && console.log(`Set env: ${key}=${value}`);
-                    core.exportVariable(key, value);
-                });
-                stepResult.commandFiles['GITHUB_PATH'].forEach((path) => {
-                    DEBUG && console.log(`Add path: ${path}`);
-                    core.addPath(path);
-                });
-                stepResult.commandFiles['GITHUB_STEP_SUMMARY'].forEach((summary) => {
-                    DEBUG && console.log(`Step summary: ${summary}`);
-                    core.summary.addRaw(summary, true).write();
-                });
-
-                stepResult.secrets.forEach((secret) => {
-                    DEBUG && console.log(`Add mask: ***`);
-                    core.setSecret(secret);
-                });
-            });
 
             // complete stage promise
-
             if (stepResults.every((result) => result.conclusion === 'success'
                 || result.conclusion === 'skipped'
                 || !result.conclusion)) {
@@ -655,7 +657,7 @@ function buildStepLogPrefix(event, stepResult) {
     }
     if (event === 'End') {
         // no job result indicates the step action has no stage implementation
-        if (!stepResult || stepResult === 'success') {
+        if (!stepResult || stepResult === 'success' || stepResult === 'skipped') {
             return colorizeGray('⬤ ');
         }
         return colorizeRed('⬤ ');
