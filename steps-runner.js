@@ -10,6 +10,7 @@ import {
     colorizeBlue,
     colorizeCyan,
     colorizeGray,
+    colorizeLightBlue,
     colorizePurple,
     colorizeRed,
     colorizeYellow,
@@ -215,11 +216,15 @@ export async function run(stage) {
                                 stepResult.secrets.push(line.arg);
                                 break;
 
+                            case 'notice':
                             case 'warning':
                             case 'error':
                             case 'debug': {
                                 let concurrentLogMsg = line.raw.replace(/^::[^:]+::/, '');
                                 switch (line.command) {
+                                    case 'notice':
+                                        // keep default color
+                                        break;
                                     case 'warning':
                                         concurrentLogMsg = colorizeYellow(concurrentLogMsg);
                                         break;
