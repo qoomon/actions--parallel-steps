@@ -372,7 +372,7 @@ export async function run(stage) {
                 buildStepIndicator(stepIndex) +
                 colorizeBlue(`__::Step::${stage}::End::`)
             );
-        } else if (stepResult.status === 'Queued') {
+        } else if (stepResult.status === 'Queued' || stepResult.status === 'Completed') {
             stepResult.status = 'Completed';
             // do nothing, the step was never started
         } else {
