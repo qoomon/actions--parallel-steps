@@ -1,7 +1,9 @@
 # Parallel Steps &nbsp; [![starline](https://starlines.qoo.monster/assets/qoomon/actions--parallel-steps)](https://github.com/qoomon/starline)
 [![Actions](https://img.shields.io/badge/qoomon-GitHub%20Actions-blue)](https://github.com/qoomon/actions)
 
-With this action, you can run steps in parallel within a GitHub Actions workflow job. Under the hood, this action uses [act](https://github.com/nektos/act).
+With this action, you can run steps in parallel within a GitHub Actions workflow job. 
+
+Under the hood, this action uses [act](https://github.com/nektos/act).
 
 ## Usage
 
