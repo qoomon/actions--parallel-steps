@@ -5,18 +5,7 @@ import path from "node:path";
 import {fileURLToPath} from "url";
 import os from 'os';
 import readline from "node:readline";
-import {
-    ACTION_STEP_TEMP_DIR,
-    colorizeBlue,
-    colorizeCyan,
-    colorizeGray,
-    colorizePurple,
-    colorizeRed,
-    colorizeYellow,
-    CompletablePromise,
-    DEBUG,
-    TRACE
-} from "./act-interceptor/utils.js";
+import {ACTION_STEP_TEMP_DIR, colorize, CompletablePromise, DEBUG, TRACE} from "./act-interceptor/utils.js";
 import core from "@actions/core";
 import {EOL} from "node:os";
 import TailFile from "@logdna/tail-file";
@@ -113,7 +102,8 @@ export async function run(stage) {
 
     function concurrentLog(...args) {
         if (!concurrentLogGroup) {
-            core.startGroup("Concurrent logs");
+            console.log('');
+            core.startGroup(colorize(" Concurrent logs", 'Gray', false));
             concurrentLogGroup = true;
         }
         console.log(...args);
@@ -132,7 +122,7 @@ export async function run(stage) {
     }
 
     const stagePromise = new CompletablePromise();
-    DEBUG && console.log(colorizePurple(`__::Act::${stage}::Start::`));
+    DEBUG && console.log(colorize(`__::Act::${stage}::Start::`, 'Purple', true));
 
     await fs.appendFile(errorStepsFilePath, ''); // ensure the error steps file exists
     const errorStepsFileContent = await fs.readFile(errorStepsFilePath).then((buffer) => buffer.toString());
@@ -151,7 +141,7 @@ export async function run(stage) {
             }
 
             if (!line) return;
-            TRACE && concurrentLog(colorizeCyan(line));
+            TRACE && concurrentLog(colorize(line, 'Cyan', true));
             line = parseActLine(line);
 
             if (line.error) {
@@ -237,13 +227,13 @@ export async function run(stage) {
                                         // keep default color
                                         break;
                                     case 'warning':
-                                        concurrentLogMsg = colorizeYellow(concurrentLogMsg);
+                                        concurrentLogMsg = colorize(concurrentLogMsg, 'Yellow', true);
                                         break;
                                     case 'error':
-                                        concurrentLogMsg = colorizeRed(concurrentLogMsg);
+                                        concurrentLogMsg = colorize(concurrentLogMsg, 'Red', true);
                                         break;
                                     case 'debug':
-                                        concurrentLogMsg = colorizeGray(concurrentLogMsg);
+                                        concurrentLogMsg = colorize(concurrentLogMsg, 'Gray');
                                         break;
                                 }
                                 concurrentLog(
@@ -274,7 +264,7 @@ export async function run(stage) {
                             concurrentLog(
                                 buildStepLogPrefix() +
                                 buildStepIndicator(stepIndex) +
-                                (stepResult.outputGroup ? `  ${colorizeRed(errorMessage)}` : colorizeRed(errorMessage)),
+                                (stepResult.outputGroup ? `  ${colorize(errorMessage, 'Red', true)}` : colorize(errorMessage, 'Red', true)),
                             );
                             stepResult.output += '::error::' + (stepResult.outputGroup ? `  ${errorMessage}` : errorMessage) + EOL;
                             await endStep(stepIndex, 'error');
@@ -285,7 +275,7 @@ export async function run(stage) {
                     let concurrentLogMsg = line.msg;
                     if (concurrentLogMsg.startsWith('[command]')) {
                         concurrentLogMsg = concurrentLogMsg.replace(/^\[command]/, '');
-                        concurrentLogMsg = colorizeBlue(concurrentLogMsg);
+                        concurrentLogMsg = colorize(concurrentLogMsg, 'Blue');
                     }
                     concurrentLog(
                         buildStepLogPrefix() +
@@ -295,7 +285,8 @@ export async function run(stage) {
 
                     let outputMsg = line.msg;
                     if (outputMsg.startsWith('[command]')) {
-                        outputMsg = colorizeBlue(outputMsg.replace(/^\[command]/, ''));
+                        outputMsg = outputMsg.replace(/^\[command]/, '')
+                        outputMsg = colorize(outputMsg, 'Blue');
                     }
                     stepResult.output += (stepResult.outputGroup ? `  ${outputMsg}` : outputMsg) + EOL;
                 }
@@ -337,7 +328,7 @@ export async function run(stage) {
 
         DEBUG && console.log(buildStepLogPrefix() +
             buildStepIndicator(stepIndex) +
-            colorizeBlue(`__::Step::${stage}::Start::`)
+            colorize(`__::Step::${stage}::Start::`, 'Blue', true)
         );
         concurrentLog(
             buildStepLogPrefix('Start') +
@@ -369,7 +360,7 @@ export async function run(stage) {
             );
             DEBUG && console.log(buildStepLogPrefix() +
                 buildStepIndicator(stepIndex) +
-                colorizeBlue(`__::Step::${stage}::End::`)
+                colorize(`__::Step::${stage}::End::`, 'Blue', true),
             );
         } else if (stepResult.status === 'Queued') {
             stepResult.status = 'Completed';
@@ -384,13 +375,24 @@ export async function run(stage) {
                 core.endGroup();
                 console.log('');
             }
-            DEBUG && console.log(colorizePurple(`__::Act::${stage}::End::`));
 
-            stepResults.forEach((stepResult, stepIndex) => {
-                const step = steps[stepIndex];
+            if (stage === 'Main' && step.id) {
+                stepResults.forEach((stepResult) => {
+                    const outcomeKey = step.id + '--outcome';
+                    DEBUG && console.log(colorize(`Set output: ${outcomeKey}=${stepResult.outcome}`, 'Purple'));
+                    core.setOutput(outcomeKey, stepResult.outcome);
 
-                // log aggregated step results
-                if (stepResult.conclusion) {
+                    const conclusionKey = step.id + '--conclusion';
+                    DEBUG && console.log(colorize(`Set output: ${conclusionKey}=${stepResult.conclusion}`, 'Purple'));
+                    core.setOutput(conclusionKey, stepResult.conclusion);
+                })
+            }
+
+            stepResults
+                .map((stepResult, stepIndex) => [steps[stepIndex], stepResult])
+                .filter(([_, stepResult]) => stepResult.outcome !== 'skipped')
+                .forEach(([step, stepResult], completedStepsIndex, completedSteps) => {
+                    // log aggregated step results
                     core.startGroup(' ' +
                         buildStepLogPrefix('End', stepResult.conclusion) +
                         buildStepHeadline(stage, step, stepResult)
@@ -398,52 +400,43 @@ export async function run(stage) {
                     console.log(removeTrailingNewLine(stepResult.output));
                     core.endGroup();
 
-                    if (stepIndex < stepResults.length - 1) {
-                        console.log('')
+                    // add a new line between steps
+                    if (completedStepsIndex < completedSteps.length - 1) {
+                        console.log('');
                     }
-                }
 
-                if (stage === 'Main' && step.id) {
-                    const outcomeKey = step.id + '--outcome';
-                    DEBUG && console.log(`Set output: ${outcomeKey}=${stepResult.outcome}`);
-                    core.setOutput(outcomeKey, stepResult.outcome);
+                    // command files
+                    Object.entries(stepResult.commandFiles['GITHUB_OUTPUT']).forEach(([key, value]) => {
+                        DEBUG && console.log(colorize(`Set output: ${key}=${value}`, 'Purple'));
+                        core.setOutput(key, value);
+                        if (step.id) {
+                            const stepKey = step.id + '--' + key;
+                            DEBUG && console.log(colorize(`Set output: ${stepKey}=${value}`, 'Purple'));
+                            core.setOutput(stepKey, value);
+                        }
+                    });
+                    Object.entries(stepResult.commandFiles['GITHUB_ENV']).forEach(([key, value]) => {
+                        DEBUG && console.log(colorize(`Set env: ${key}=${value}`, 'Purple'));
+                        core.exportVariable(key, value);
+                    });
+                    stepResult.commandFiles['GITHUB_PATH'].forEach((path) => {
+                        DEBUG && console.log(colorize(`Add path: ${path}`, 'Purple'));
+                        core.addPath(path);
+                    });
+                    stepResult.commandFiles['GITHUB_STEP_SUMMARY'].forEach((summary) => {
+                        DEBUG && console.log(colorize(`Step summary: ${summary}`, 'Purple'));
+                        core.summary.addRaw(summary, true).write();
+                    });
 
-                    const conclusionKey = step.id + '--conclusion';
-                    DEBUG && console.log(`Set output: ${conclusionKey}=${stepResult.conclusion}`);
-                    core.setOutput(conclusionKey, stepResult.conclusion);
-                }
-
-                // command files
-                Object.entries(stepResult.commandFiles['GITHUB_OUTPUT']).forEach(([key, value]) => {
-                    DEBUG && console.log(`Set output: ${key}=${value}`);
-                    core.setOutput(key, value);
-                    if (step.id) {
-                        const stepKey = step.id + '--' + key;
-                        DEBUG && console.log(`Set output: ${stepKey}=${value}`);
-                        core.setOutput(stepKey, value);
-                    }
-                });
-                Object.entries(stepResult.commandFiles['GITHUB_ENV']).forEach(([key, value]) => {
-                    DEBUG && console.log(`Set env: ${key}=${value}`);
-                    core.exportVariable(key, value);
-                });
-                stepResult.commandFiles['GITHUB_PATH'].forEach((path) => {
-                    DEBUG && console.log(`Add path: ${path}`);
-                    core.addPath(path);
-                });
-                stepResult.commandFiles['GITHUB_STEP_SUMMARY'].forEach((summary) => {
-                    DEBUG && console.log(`Step summary: ${summary}`);
-                    core.summary.addRaw(summary, true).write();
+                    stepResult.secrets.forEach((secret) => {
+                        DEBUG && console.log(colorize(`Add mask: ***`, 'Purple'));
+                        core.setSecret(secret);
+                    });
                 });
 
-                stepResult.secrets.forEach((secret) => {
-                    DEBUG && console.log(`Add mask: ***`);
-                    core.setSecret(secret);
-                });
-            });
+            DEBUG && console.log(colorize(`__::Act::${stage}::End::`, 'Purple', true));
 
             // complete stage promise
-
             if (stepResults.every((result) => result.conclusion === 'success'
                 || result.conclusion === 'skipped'
                 || !result.conclusion)) {
@@ -640,7 +633,7 @@ function buildStepHeadline(actStage, step, jobResult = null) {
     groupHeadline += `Run ${buildStepDisplayName(step)}`;
 
     if (jobResult?.executionTime) {
-        groupHeadline += colorizeGray(` [${formatMilliseconds(jobResult.executionTime / 1_000_000)}]`);
+        groupHeadline += colorize(` [${formatMilliseconds(jobResult.executionTime / 1_000_000)}]`, 'Gray', true);
     }
 
     return groupHeadline;
@@ -648,22 +641,22 @@ function buildStepHeadline(actStage, step, jobResult = null) {
 
 function buildStepLogPrefix(event, stepResult) {
     if (event === 'Start') {
-        return colorizeGray('❯ ');
+        return colorize('❯ ', 'Gray', true);
     }
     if (event === 'Log' || !event) {
-        return colorizeGray('  ');
+        return colorize('  ', 'Gray', true);
     }
     if (event === 'End') {
         // no job result indicates the step action has no stage implementation
-        if (!stepResult || stepResult === 'success') {
-            return colorizeGray('⬤ ');
+        if (!stepResult || stepResult === 'success' || stepResult === 'skipped') {
+            return colorize('⬤ ', 'Gray', true);
         }
-        return colorizeRed('⬤ ');
+        return colorize('⬤ ', 'Red', true);
     }
 }
 
 function buildStepIndicator(stepIndex) {
-    return colorizeGray(`[${stepIndex}] `);
+    return colorize(`[${stepIndex}] `, 'Gray', true);
 }
 
 function buildStepDisplayName(step) {
@@ -704,12 +697,15 @@ export async function installDependencies() {
     const githubToken = core.getInput("token", {required: true});
     // Install gh-act extension
     const actVersionTag = `v${GH_ACT_VERSION}`;
-    console.log(`Installing gh cli extension nektos/gh-act@${actVersionTag} ...`);
+    core.debug(`Installing gh cli extension nektos/gh-act@${actVersionTag} ...`);
     child_process.execSync(`gh extension install https://github.com/nektos/gh-act --pin ${actVersionTag}`, {
         stdio: 'inherit',
         env: {...process.env, GH_TOKEN: githubToken}
     });
-    child_process.execSync("gh act --version", {
-        stdio: 'inherit',
-    });
+
+    const installedActVersion = child_process.execSync("gh act --version").toString().trim()
+        .split(/\s/).at(-1);
+    if (installedActVersion !== GH_ACT_VERSION) {
+        core.warning(`Installed gh act version (${installedActVersion}) does not match expected version (${GH_ACT_VERSION}).`);
+    }
 }

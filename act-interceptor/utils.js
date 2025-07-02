@@ -44,39 +44,25 @@ export function extendBasename(filePath, annex) {
     return pathSplit.join('/');
 }
 
-export function colorizeCyan(value) {
-    return value.split("\n")
-        .map((line) => `\x1b[1;36m${line}\x1b[0m`)
-        .join('\n');
-}
-
-export function colorizeGray(value) {
-    return value.split("\n")
-        .map((line) => `\x1b[1;90m${line}\x1b[0m`)
-        .join('\n');
-}
-
-export function colorizeRed(value) {
-    return value.split("\n")
-        .map((line) => `\x1b[1;31m${line}\x1b[0m`)
-        .join('\n');
-}
-
-export function colorizeYellow(value) {
-    return value.split("\n")
-        .map((line) => `\x1b[1;33m${line}\x1b[0m`)
-        .join('\n');
-}
-
-export function colorizePurple(value) {
-    return value.split("\n")
-        .map((line) => `\x1b[1;35m${line}\x1b[0m`)
-        .join('\n');
-}
-
-export function colorizeBlue(value) {
-    return value.split("\n")
-        .map((line) => `\x1b[1;34m${line}\x1b[0m`)
+export function colorize(text, foregroundColor, bold = false) {
+    const foregroundColorCode = {
+        'black': 30,
+        'red': 31,
+        'green': 32,
+        'yellow': 33,
+        'blue': 34,
+        'purple': 35,
+        'cyan': 36,
+        'white': 37,
+        'gray': 90
+    }[foregroundColor.toLowerCase()];
+    if(!foregroundColorCode) {
+        throw new Error(`Unsupported foreground color: ${foregroundColor}`);
+    }
+    const prefix = `\x1b[${bold ? 1 : 0};${foregroundColorCode}m`;
+    const suffix = '\x1b[0m';
+    return text.split("\n")
+        .map((line) => `${prefix}${line}${suffix}`)
         .join('\n');
 }
 
