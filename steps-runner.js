@@ -421,6 +421,21 @@ export async function run(stage) {
                     DEBUG && console.log(`Add mask: ***`);
                     core.setSecret(secret);
                 });
+
+                // set step outcome and conclusion outputs for steps with IDs
+                if (step.id) {
+                    const outcome = mapResultToOutcome(stepResult.result);
+                    const conclusion = mapResultToConclusion(stepResult.result);
+                    
+                    const outcomeKey = step.id + '--outcome';
+                    const conclusionKey = step.id + '--conclusion';
+                    
+                    DEBUG && console.log(`Set output: ${outcomeKey}=${outcome}`);
+                    core.setOutput(outcomeKey, outcome);
+                    
+                    DEBUG && console.log(`Set output: ${conclusionKey}=${conclusion}`);
+                    core.setOutput(conclusionKey, conclusion);
+                }
             });
 
             // complete stage promise
@@ -673,6 +688,35 @@ function formatMilliseconds(milliseconds) {
     parts.push(`${seconds}s`);
 
     return parts.join(" ");
+}
+
+/**
+ * Maps internal step result to GitHub Actions outcome value
+ * @param result {string|null} Internal step result ('success', 'error', or null)
+ * @returns {string} GitHub Actions outcome ('success', 'failure', 'cancelled', 'skipped')
+ */
+function mapResultToOutcome(result) {
+    switch (result) {
+        case 'success':
+            return 'success';
+        case 'error':
+            return 'failure';
+        case null:
+        case undefined:
+            return 'skipped';
+        default:
+            return 'failure'; // fallback for unknown results
+    }
+}
+
+/**
+ * Maps internal step result to GitHub Actions conclusion value  
+ * @param result {string|null} Internal step result ('success', 'error', or null)
+ * @returns {string} GitHub Actions conclusion ('success', 'failure', 'cancelled', 'skipped')
+ */
+function mapResultToConclusion(result) {
+    // For now, conclusion is the same as outcome since we don't handle continue-on-error differently
+    return mapResultToOutcome(result);
 }
 
 export async function installDependencies() {

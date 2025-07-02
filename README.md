@@ -31,6 +31,46 @@ jobs:
         env:
           RECIPIENT: ${{ steps.parallel-steps.outputs.greetings--recipient }}
            # or just ${{ steps.parallel-steps.outputs.recipient }}
+
+      # access step outcomes and conclusions
+      - run: |
+          echo "Step outcome: ${{ steps.parallel-steps.outputs.greetings--outcome }}"
+          echo "Step conclusion: ${{ steps.parallel-steps.outputs.greetings--conclusion }}"
+```
+
+### Accessing Step Outcomes and Conclusions
+
+For each step with an `id`, you can access the step's outcome and conclusion:
+
+```yaml
+- uses: qoomon/actions--parallel-steps@v1
+  id: parallel-scans
+  with:
+    steps: |
+      - id: trivy
+        run: trivy scan
+      - id: sonar
+        continue-on-error: true
+        run: sonar-scanner
+
+- run: |
+    echo "Trivy outcome: ${{ steps.parallel-scans.outputs.trivy--outcome }}"
+    echo "Trivy conclusion: ${{ steps.parallel-scans.outputs.trivy--conclusion }}"
+    echo "Sonar outcome: ${{ steps.parallel-scans.outputs.sonar--outcome }}"
+    echo "Sonar conclusion: ${{ steps.parallel-scans.outputs.sonar--conclusion }}"
+
+# Use outcomes in conditional steps
+- if: ${{ steps.parallel-scans.outputs.trivy--outcome == 'failure' }}
+  run: echo "Trivy scan failed"
+```
+
+**Outcome and Conclusion Values:**
+- `success`: The step completed successfully
+- `failure`: The step failed
+- `skipped`: The step was skipped or didn't run
+
+> [!Note]
+> Currently, `outcome` and `conclusion` return the same values. In the future, `conclusion` may differ from `outcome` when `continue-on-error` is used.
 ```
 
 > [!Note]

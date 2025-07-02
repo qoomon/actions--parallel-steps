@@ -44,6 +44,15 @@ jobs:
                   core.setOutput('test-output', 'BBB')
                   core.addPath('./test-command-CCC')
                   core.summary.addHeading('Test Summary').write()
+            
+            - name: Test Success Step
+              id: success-step
+              run: echo "This step should succeed"
+              
+            - name: Test Failure Step
+              id: failure-step 
+              continue-on-error: true
+              run: exit 1
       #            - uses: actions/setup-java@v4
       #              with:
       #                distribution: 'temurin' # See 'Supported distributions' for available options
@@ -53,6 +62,14 @@ jobs:
           echo "TEST_VARIABLE:                                         $TEST_VARIABLE"
           echo "steps.parallel-steps.outputs.test-output:              ${{ steps.parallel-steps.outputs.test-output }}"
           echo "steps.parallel-steps.outputs.command-file--test-output: ${{ steps.parallel-steps.outputs.command-file--test-output }}"
+          echo ""
+          echo "=== Testing outcome and conclusion outputs ==="
+          echo "command-file outcome:   ${{ steps.parallel-steps.outputs.command-file--outcome }}"
+          echo "command-file conclusion: ${{ steps.parallel-steps.outputs.command-file--conclusion }}"
+          echo "success-step outcome:   ${{ steps.parallel-steps.outputs.success-step--outcome }}"
+          echo "success-step conclusion: ${{ steps.parallel-steps.outputs.success-step--conclusion }}"
+          echo "failure-step outcome:   ${{ steps.parallel-steps.outputs.failure-step--outcome }}"
+          echo "failure-step conclusion: ${{ steps.parallel-steps.outputs.failure-step--conclusion }}"
           
             
 
