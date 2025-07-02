@@ -388,7 +388,10 @@ export async function run(stage) {
                     );
                     console.log(removeTrailingNewLine(stepResult.output));
                     core.endGroup();
-                    console.log('')
+
+                    if (stepIndex < stepResults.length - 1) {
+                        console.log('')
+                    }
                 }
 
                 // command files
