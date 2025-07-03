@@ -10,15 +10,11 @@ import core from "@actions/core";
 import {EOL} from "node:os";
 import TailFile from "@logdna/tail-file";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+export const GH_ACT_VERSION = '0.2.79';
 
-const actLogFilePath = path.join(ACTION_STEP_TEMP_DIR, 'act.log');
-const errorStepsFilePath = path.join(ACTION_STEP_TEMP_DIR, '.error-steps');
-
-const ACTION_ENV = Object.fromEntries(Object.entries(process.env).filter(([key]) => {
-    return (key.startsWith('GITHUB_') || key.startsWith('RUNNER_'))
-        && ![
+const ACTION_ENV = Object.fromEntries(Object.entries(process.env)
+    .filter(([key]) => {
+        return (key.startsWith('GITHUB_') || key.startsWith('RUNNER_')) && ![
             'RUNNER_TEMP', // TODO
             'GITHUB_WORKSPACE',
             // command files
@@ -28,9 +24,13 @@ const ACTION_ENV = Object.fromEntries(Object.entries(process.env).filter(([key])
             'GITHUB_STEP_SUMMARY',
             'GITHUB_STATE',
         ].includes(key);
-}));
+    }));
 
-export const GH_ACT_VERSION = '0.2.79';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const actLogFilePath = path.join(ACTION_STEP_TEMP_DIR, 'act.log');
+const errorStepsFilePath = path.join(ACTION_STEP_TEMP_DIR, '.error-steps');
 
 export async function run(stage) {
     const githubToken = core.getInput("token", {required: true});
@@ -76,26 +76,26 @@ export async function run(stage) {
 
         return steps;
     });
-    const stepResults = steps.map((step) => [step,{
+    const stepResults = steps.map((step) => [step, {
         status: 'Queued',
         output: '',
         outputGroup: false,
         outcome: null,
+        continueOnError: false,
+        executionTime: null,
+        commands: {
+            output: {},
+            env: {},
+            path: [],
+            summary: [],
+            mask: [],
+        },
         get conclusion() {
             if (this.continueOnError && this.outcome === 'failure') {
                 return 'success';
             }
             return this.outcome;
         },
-        continueOnError: false,
-        executionTime: null,
-        commandFiles: {
-            'GITHUB_OUTPUT': {},
-            'GITHUB_ENV': {},
-            'GITHUB_PATH': [],
-            'GITHUB_STEP_SUMMARY': [],
-        },
-        secrets: [],
     }]);
 
     let concurrentLogGroup = false
@@ -110,8 +110,7 @@ export async function run(stage) {
     }
 
     if (stage === 'Pre') {
-        await fs.writeFile(actLogFilePath, '');
-
+        await fs.writeFile(actLogFilePath, ''); // ensure the act log file exists
         await startAct(steps, githubToken, actLogFilePath);
     } else {
         const skipped = !await fs.access(actLogFilePath).then(() => true).catch(() => false);
@@ -199,22 +198,22 @@ export async function run(stage) {
                                 break;
 
                             case 'set-output':
-                                stepResult.commandFiles['GITHUB_OUTPUT'][line.name] = line.arg;
+                                stepResult.commands.output[line.name] = line.arg;
                                 break;
                             case 'set-env':
                                 // skip GITHUB_ENV variables that are passed to and set by the interceptor action, see startAct()
                                 if (!Object.keys(ACTION_ENV).includes(line.arg)) {
-                                    stepResult.commandFiles['GITHUB_ENV'][line.name] = line.arg;
+                                    stepResult.commands.env[line.name] = line.arg;
                                 }
                                 break;
                             case 'add-path':
-                                stepResult.commandFiles['GITHUB_PATH'].push(line.arg);
+                                stepResult.commands.path.push(line.arg);
                                 break;
                             case 'summary':
-                                stepResult.commandFiles['GITHUB_STEP_SUMMARY'].push(line.content);
+                                stepResult.commands.summary.push(line.content);
                                 break;
                             case 'add-mask':
-                                stepResult.secrets.push(line.arg);
+                                stepResult.commands.mask.push(line.arg);
                                 break;
 
                             case 'notice':
@@ -317,6 +316,7 @@ export async function run(stage) {
         try {
             process.kill(actPid)
         } catch (error) {
+            core.debug(`Failed to kill act process with PID ${actPid}: ${error.message}`);
         }
     }
 
@@ -374,21 +374,6 @@ export async function run(stage) {
                 console.log('');
             }
 
-
-            if (stage === 'Main') {
-                stepResults
-                    .filter(([step, _]) => step.id)
-                    .forEach(([step, stepResult]) => {
-                        const outcomeKey = step.id + '--outcome';
-                        DEBUG && console.log(colorize(`Set output: ${outcomeKey}=${stepResult.outcome}`, 'Purple'));
-                        core.setOutput(outcomeKey, stepResult.outcome);
-
-                        const conclusionKey = step.id + '--conclusion';
-                        DEBUG && console.log(colorize(`Set output: ${conclusionKey}=${stepResult.conclusion}`, 'Purple'));
-                        core.setOutput(conclusionKey, stepResult.conclusion);
-                    })
-            }
-
             stepResults
                 .filter(([_, stepResult]) => stepResult.outcome !== 'skipped')
                 .forEach(([step, stepResult], completedStepsIndex, completedSteps) => {
@@ -406,7 +391,7 @@ export async function run(stage) {
                     }
 
                     // command files
-                    Object.entries(stepResult.commandFiles['GITHUB_OUTPUT']).forEach(([key, value]) => {
+                    Object.entries(stepResult.commands.output).forEach(([key, value]) => {
                         DEBUG && console.log(colorize(`Set output: ${key}=${value}`, 'Purple'));
                         core.setOutput(key, value);
                         if (step.id) {
@@ -415,24 +400,38 @@ export async function run(stage) {
                             core.setOutput(stepKey, value);
                         }
                     });
-                    Object.entries(stepResult.commandFiles['GITHUB_ENV']).forEach(([key, value]) => {
+                    Object.entries(stepResult.commands.env).forEach(([key, value]) => {
                         DEBUG && console.log(colorize(`Set env: ${key}=${value}`, 'Purple'));
                         core.exportVariable(key, value);
                     });
-                    stepResult.commandFiles['GITHUB_PATH'].forEach((path) => {
+                    stepResult.commands.path.forEach((path) => {
                         DEBUG && console.log(colorize(`Add path: ${path}`, 'Purple'));
                         core.addPath(path);
                     });
-                    stepResult.commandFiles['GITHUB_STEP_SUMMARY'].forEach((summary) => {
+                    stepResult.commands.summary.forEach((summary) => {
                         DEBUG && console.log(colorize(`Step summary: ${summary}`, 'Purple'));
                         core.summary.addRaw(summary, true).write();
                     });
 
-                    stepResult.secrets.forEach((secret) => {
+                    stepResult.commands.mask.forEach((mask) => {
                         DEBUG && console.log(colorize(`Add mask: ***`, 'Purple'));
-                        core.setSecret(secret);
+                        core.setSecret(mask);
                     });
                 });
+
+            if (stage === 'Main') {
+                stepResults
+                    .filter(([step, _]) => step.id)
+                    .forEach(([step, stepResult]) => {
+                        const outcomeKey = step.id + '--outcome';
+                        DEBUG && console.log(colorize(`Set output: ${outcomeKey}=${stepResult.outcome}`, 'Purple'));
+                        core.setOutput(outcomeKey, stepResult.outcome);
+
+                        const conclusionKey = step.id + '--conclusion';
+                        DEBUG && console.log(colorize(`Set output: ${conclusionKey}=${stepResult.conclusion}`, 'Purple'));
+                        core.setOutput(conclusionKey, stepResult.conclusion);
+                    })
+            }
 
             DEBUG && console.log(colorize(`__::Act::${stage}::End::`, 'Purple', true));
 

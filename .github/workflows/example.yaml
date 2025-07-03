@@ -12,9 +12,7 @@ jobs:
         with:
           steps: |
             - run: | 
-                echo "::group::xxx"
-                echo GITHUB_ACTION=$GITHUB_ACTION
-                echo "::endgroup::"
+                env | grep -e '^RUNNER_' -e '^GITHUB_'
             - uses: actions/checkout@v4
             - name : Test File Creation
               run: |
