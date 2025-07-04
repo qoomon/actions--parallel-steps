@@ -3,7 +3,7 @@
 
 With this action, you can run steps in parallel within a GitHub Actions workflow job. 
 
-Under the hood, this action uses [act](https://github.com/nektos/act).
+Under the hood, this action utilize [act](https://github.com/nektos/act).
 
 ## Usage
 
