@@ -7,12 +7,11 @@ jobs:
     timeout-minutes: 1
     runs-on: ubuntu-latest
     steps:
+
       - uses: qoomon/actions--parallel-steps@main
         id: parallel-steps
         with:
           steps: |
-            - run: | 
-                env | grep -e '^RUNNER_' -e '^GITHUB_'
             - uses: actions/checkout@v4
             - name : Test File Creation
               run: |

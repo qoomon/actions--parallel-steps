@@ -5,7 +5,7 @@ import path from "node:path";
 import {fileURLToPath} from "url";
 import os from 'os';
 import readline from "node:readline";
-import {ACTION_STEP_TEMP_DIR, colorize, CompletablePromise, DEBUG, TRACE} from "./act-interceptor/utils.js";
+import {ACTION_STEP_TEMP_DIR, colorize, CompletablePromise, TRACE} from "./act-interceptor/utils.js";
 import core from "@actions/core";
 import {EOL} from "node:os";
 import TailFile from "@logdna/tail-file";
@@ -16,7 +16,6 @@ const ACTION_ENV = Object.fromEntries(Object.entries(process.env)
     .filter(([key]) => {
         return (key.startsWith('GITHUB_') || key.startsWith('RUNNER_')) && ![
             'RUNNER_TEMP', // TODO
-            'GITHUB_WORKSPACE',
             // command files
             'GITHUB_OUTPUT',
             'GITHUB_ENV',
@@ -43,31 +42,26 @@ export async function run(stage) {
         try {
             steps = YAML.parse(value);
         } catch (e) {
-            core.setFailed(`Invalid steps input - Invalid YAML - ${e.message}`);
-            process.exit(1);
+            throw new Error(`Invalid steps input - Invalid YAML - ${e.message}`);
         }
 
         if (!Array.isArray(steps)) {
-            core.setFailed(`Invalid steps input - Must be an YAML array`);
-            process.exit(1);
+            throw new Error(`Invalid steps input - Must be an YAML array`);
         }
 
         if (steps.length > os.cpus().length) {
-            core.setFailed(`Invalid steps input - Parallel steps are limited to the number of available CPUs (${os.cpus().length})`);
-            process.exit(1);
+            throw new Error(`Invalid steps input - Parallel steps are limited to the number of available CPUs (${os.cpus().length})`);
         }
 
         const stepIds = new Set();
         for (const step of steps) {
             if (step.id !== undefined) {
                 if (!String(step.id).match(/^[a-zA-Z_][a-zA-Z0-9_-]{1,100}$/)) {
-                    core.setFailed(`Invalid steps input - The identifier '${step.id}' is invalid.` +
+                    throw new Error(`Invalid steps input - The identifier '${step.id}' is invalid.` +
                         `IDs may only contain alphanumeric characters, '_', and '-'. IDs must start with a letter or '_' and and must be less than 100 characters.`);
-                    process.exit(1);
                 }
                 if (stepIds.has(step.id)) {
-                    core.setFailed(`Invalid steps input - The identifier '${step.id}' may not be used more than once within the same scope.`);
-                    process.exit(1);
+                    throw new Error(`Invalid steps input - The identifier '${step.id}' may not be used more than once within the same scope.`);
                 }
 
                 stepIds.add(step.id);
@@ -76,6 +70,7 @@ export async function run(stage) {
 
         return steps;
     });
+
     const stepResults = steps.map((step) => [step, {
         status: 'Queued',
         output: '',
@@ -113,15 +108,18 @@ export async function run(stage) {
         await fs.writeFile(actLogFilePath, ''); // ensure the act log file exists
         await startAct(steps, githubToken, actLogFilePath);
     } else {
-        const skipped = !await fs.access(actLogFilePath).then(() => true).catch(() => false);
-        if (skipped) {
+        const stages = ['Pre', 'Main', 'Post'];
+        const previousStage = stages[stages.indexOf(stage) - 1];
+        const previousStageFilePath = path.join(ACTION_STEP_TEMP_DIR, `.Interceptor-${previousStage}-Stage`);
+        const skip = !await fs.access(previousStageFilePath).then(() => true).catch(() => false);
+        if (skip) {
             core.debug(`Skipping ${stage} stage`);
             return;
         }
     }
 
     const stagePromise = new CompletablePromise();
-    DEBUG && console.log(colorize(`__::Act::${stage}::Start::`, 'Purple', true));
+    core.debug(colorize(`__::Act::${stage}::Start::`, 'Purple', true));
 
     await fs.appendFile(errorStepsFilePath, ''); // ensure the error steps file exists
     const errorStepsFileContent = await fs.readFile(errorStepsFilePath).then((buffer) => buffer.toString());
@@ -135,11 +133,10 @@ export async function run(stage) {
     await actLogTail.start();
     readline.createInterface({input: actLogTail, crlfDelay: Infinity})
         .on('line', async (line) => {
-            if (stagePromise.status !== 'pending') {
+            if (!line || stagePromise.status !== 'pending') {
                 return;
             }
 
-            if (!line) return;
             TRACE && concurrentLog(colorize(line, 'Cyan', true));
             line = parseActLine(line);
 
@@ -149,7 +146,8 @@ export async function run(stage) {
                     let error = new Error(`${line.error} - ${line.msg}`)
                     if (line.error === 'workflow is not valid') {
                         const workflowStepError = line.msg.match(/Failed to match run-step: Line: (?<line>\d+) Column (?<column>\d+): (?<msg>.*)$/)?.groups;
-                        error = new Error(`Invalid steps input - ${workflowStepError?.msg ?? line.msg}`)
+                        error = new Error(`Invalid steps input` +
+                            ` - Line: ${workflowStepError.line - 11} Column ${workflowStepError.column - 6}: ${workflowStepError?.msg ?? line.msg}`)
                     }
                     stagePromise.reject(error);
                     return;
@@ -311,6 +309,7 @@ export async function run(stage) {
 
     await stagePromise
         .finally(() => actLogTail.quit());
+
     if (stage === 'Post') {
         const actPid = parseInt(core.getState('act-pid'));
         try {
@@ -325,7 +324,7 @@ export async function run(stage) {
 
         stepResult.status = 'In Progress';
 
-        DEBUG && console.log(buildStepLogPrefix() +
+        core.debug(buildStepLogPrefix() +
             buildStepIndicator(stepIndex) +
             colorize(`__::Step::${stage}::Start::`, 'Blue', true)
         );
@@ -356,7 +355,7 @@ export async function run(stage) {
                 buildStepIndicator(stepIndex) +
                 buildStepHeadline(stage, step, stepResult),
             );
-            DEBUG && console.log(buildStepLogPrefix() +
+            core.debug(buildStepLogPrefix() +
                 buildStepIndicator(stepIndex) +
                 colorize(`__::Step::${stage}::End::`, 'Blue', true),
             );
@@ -392,29 +391,29 @@ export async function run(stage) {
 
                     // command files
                     Object.entries(stepResult.commands.output).forEach(([key, value]) => {
-                        DEBUG && console.log(colorize(`Set output: ${key}=${value}`, 'Purple'));
+                        core.debug(colorize(`Set output: ${key}=${value}`, 'Purple'));
                         core.setOutput(key, value);
                         if (step.id) {
                             const stepKey = step.id + '--' + key;
-                            DEBUG && console.log(colorize(`Set output: ${stepKey}=${value}`, 'Purple'));
+                            core.debug(colorize(`Set output: ${stepKey}=${value}`, 'Purple'));
                             core.setOutput(stepKey, value);
                         }
                     });
                     Object.entries(stepResult.commands.env).forEach(([key, value]) => {
-                        DEBUG && console.log(colorize(`Set env: ${key}=${value}`, 'Purple'));
+                        core.debug(colorize(`Set env: ${key}=${value}`, 'Purple'));
                         core.exportVariable(key, value);
                     });
                     stepResult.commands.path.forEach((path) => {
-                        DEBUG && console.log(colorize(`Add path: ${path}`, 'Purple'));
+                        core.debug(colorize(`Add path: ${path}`, 'Purple'));
                         core.addPath(path);
                     });
                     stepResult.commands.summary.forEach((summary) => {
-                        DEBUG && console.log(colorize(`Step summary: ${summary}`, 'Purple'));
+                        core.debug(colorize(`Step summary: ${summary}`, 'Purple'));
                         core.summary.addRaw(summary, true).write();
                     });
 
                     stepResult.commands.mask.forEach((mask) => {
-                        DEBUG && console.log(colorize(`Add mask: ***`, 'Purple'));
+                        core.debug(colorize(`Add mask: ***`, 'Purple'));
                         core.setSecret(mask);
                     });
                 });
@@ -424,16 +423,16 @@ export async function run(stage) {
                     .filter(([step, _]) => step.id)
                     .forEach(([step, stepResult]) => {
                         const outcomeKey = step.id + '--outcome';
-                        DEBUG && console.log(colorize(`Set output: ${outcomeKey}=${stepResult.outcome}`, 'Purple'));
+                        core.debug(colorize(`Set output: ${outcomeKey}=${stepResult.outcome}`, 'Purple'));
                         core.setOutput(outcomeKey, stepResult.outcome);
 
                         const conclusionKey = step.id + '--conclusion';
-                        DEBUG && console.log(colorize(`Set output: ${conclusionKey}=${stepResult.conclusion}`, 'Purple'));
+                        core.debug(colorize(`Set output: ${conclusionKey}=${stepResult.conclusion}`, 'Purple'));
                         core.setOutput(conclusionKey, stepResult.conclusion);
                     })
             }
 
-            DEBUG && console.log(colorize(`__::Act::${stage}::End::`, 'Purple', true));
+            core.debug(colorize(`__::Act::${stage}::End::`, 'Purple', true));
 
             // complete stage promise
             if (stepResults.every(([_, stepResult]) => stepResult.conclusion === 'success'
@@ -640,7 +639,7 @@ function buildStepHeadline(actStage, step, jobResult = null) {
 
 function buildStepLogPrefix(event, stepResult) {
     if (event === 'Start') {
-        return colorize('❯ ', 'Gray', true);
+        return colorize('○ ', 'Gray', true);
     }
     if (event === 'Log' || !event) {
         return colorize('  ', 'Gray', true);

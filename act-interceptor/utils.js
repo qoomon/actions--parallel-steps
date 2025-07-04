@@ -2,8 +2,6 @@ import fs from "node:fs";
 import path from "node:path";
 
 export const TRACE = process.env["RUNNER_DEBUG"] === "2";
-export const DEBUG = process.env["RUNNER_DEBUG"] === "1" || TRACE;
-export const LOCAL = process.env["RUNNER_LOCAL"] === "1";
 
 // WORKAROUND: see startAct() in steps-runner.js
 process.env["GITHUB_ACTION"] = process.env["X_GITHUB_ACTION"] ?? process.env["GITHUB_ACTION"];
