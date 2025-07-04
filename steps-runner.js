@@ -113,8 +113,11 @@ export async function run(stage) {
         await fs.writeFile(actLogFilePath, ''); // ensure the act log file exists
         await startAct(steps, githubToken, actLogFilePath);
     } else {
-        const skipped = !await fs.access(actLogFilePath).then(() => true).catch(() => false);
-        if (skipped) {
+        const stages = ['Pre', 'Main', 'Post'];
+        const previousStage = stages[stages.indexOf(stage) - 1];
+        const previousStageFilePath = path.join(ACTION_STEP_TEMP_DIR, `.Interceptor-${previousStage}-Stage`);
+        const skip = !await fs.access(previousStageFilePath).then(() => true).catch(() => false);
+        if (skip) {
             core.debug(`Skipping ${stage} stage`);
             return;
         }
@@ -149,8 +152,10 @@ export async function run(stage) {
                     let error = new Error(`${line.error} - ${line.msg}`)
                     if (line.error === 'workflow is not valid') {
                         const workflowStepError = line.msg.match(/Failed to match run-step: Line: (?<line>\d+) Column (?<column>\d+): (?<msg>.*)$/)?.groups;
-                        error = new Error(`Invalid steps input - ${workflowStepError?.msg ?? line.msg}`)
+                        error = new Error(`Invalid steps input` +
+                            ` - Line: ${workflowStepError.line - 11} Column ${workflowStepError.column - 6}: ${workflowStepError?.msg ?? line.msg}`)
                     }
+                    // TODO handle error of previous step, and end step gracefully on error
                     stagePromise.reject(error);
                     return;
                 }
@@ -311,6 +316,7 @@ export async function run(stage) {
 
     await stagePromise
         .finally(() => actLogTail.quit());
+
     if (stage === 'Post') {
         const actPid = parseInt(core.getState('act-pid'));
         try {
