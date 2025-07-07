@@ -497,6 +497,7 @@ async function startAct(steps, githubToken, logFilePath) {
             "--concurrent-jobs", steps.length,
             "--bind", // do not copy working directory files
             "--platform", "host=-self-hosted",
+            "--container-opts", "--cpus=2 --memory=4g",
             "--local-repository", "__/act-interceptor@local" + "=" + `${__dirname}/act-interceptor`,
             "--eventpath", process.env["GITHUB_EVENT_PATH"],
             "--actor", process.env["GITHUB_ACTOR"],
