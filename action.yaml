@@ -13,6 +13,9 @@ inputs:
   steps:
     description: Parallel steps to run
     required: true
+  defaults:
+    description: Default settings that will apply to all steps
+    required: false
 
 # outputs:
 #   <step id>-<output name>:

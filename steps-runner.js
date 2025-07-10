@@ -31,9 +31,9 @@ const __dirname = path.dirname(__filename);
 const actLogFilePath = path.join(ACTION_STEP_TEMP_DIR, 'act.log');
 const errorStepsFilePath = path.join(ACTION_STEP_TEMP_DIR, '.error-steps');
 
-export async function run(stage) {
-    const githubToken = core.getInput("token", {required: true});
-    const steps = getInput("steps", {required: true}, (value) => {
+const inputs = {
+    githubToken: core.getInput("token", {required: true}),
+    steps: getInput("steps", {required: true}, (value) => {
         /** @type {Array<{
          * id?: string,
          * name?: string,
@@ -65,9 +65,18 @@ export async function run(stage) {
         }
 
         return steps;
-    });
+    }),
+    defaults: getInput("defaults", {required: false}, (value) => {
+        try {
+            return YAML.parse(value);
+        } catch (e) {
+            throw new Error(`Invalid defaults input - Invalid YAML - ${e.message}`);
+        }
+    }),
+}
 
-    const stepResults = steps.map((step) => [step, {
+export async function run(stage) {
+    const stepResults = inputs.steps.map((step) => [step, {
         status: 'Queued',
         output: '',
         outputGroup: false,
@@ -102,7 +111,7 @@ export async function run(stage) {
 
     if (stage === 'Pre') {
         await fs.writeFile(actLogFilePath, ''); // ensure the act log file exists
-        await startAct(steps, githubToken, actLogFilePath);
+        await startAct(inputs.steps, inputs.defaults, inputs.githubToken, actLogFilePath);
     } else {
         const stages = ['Pre', 'Main', 'Post'];
         const previousStage = stages[stages.indexOf(stage) - 1];
@@ -442,45 +451,51 @@ export async function run(stage) {
     }
 }
 
-async function startAct(steps, githubToken, logFilePath) {
+async function startAct(steps, defaults, githubToken, logFilePath) {
     const workflow = {
         on: process.env["GITHUB_EVENT_NAME"],
+        defaults: defaults ?? undefined,
         jobs: Object.assign({}, ...Object.entries(steps)
             // Make a deep copy of the step to avoid modifying the input steps
             .map(([stepIndex, step]) => [stepIndex, JSON.parse(JSON.stringify(step))])
-            .map(([stepIndex, step]) => ({
-                [`Step${stepIndex}`]: {
-                    "runs-on": "host", // refers to gh act parameter "--platform", "host=-self-hosted",
-                    "steps": [
-                        {
-                            uses: "__/act-interceptor@local",
-                            with: {
-                                'step': 'Pre',
-                                'temp-dir': ACTION_STEP_TEMP_DIR,
-                                'host-working-directory': process.cwd(),
-                                'host-env': JSON.stringify(ACTION_ENV),
+            .map(([stepIndex, step]) => {
+                const stepIndexToJobId = stepIndex => `Step${stepIndex}`;
+                return {
+                    [stepIndexToJobId(stepIndex)]: {
+                        "runs-on": "host", // refers to gh act parameter "--platform", "host=-self-hosted",
+                        "steps": [
+                            {
+                                uses: "__/act-interceptor@local",
+                                with: {
+                                    'step': 'Pre',
+                                    'temp-dir': ACTION_STEP_TEMP_DIR, // TODO move to file in temp directory
+                                    'host-working-directory': process.cwd(), // TODO move to file in temp directory
+                                    'host-env': JSON.stringify(ACTION_ENV), // TODO move to file in temp directory
+                                },
                             },
-                        },
-                        Object.assign(step, {
-                            env: Object.assign(step.env ?? {}, {
-                                // WORKAROUND
-                                // GITHUB_ACTION cant be overwritten by act --env nor by core.exportVariable of the interceptor pre-step,
-                                // therefore a workaround we need to set it as an environment variable of the step itself.
-                                "GITHUB_ACTION": (process.env["X_GITHUB_ACTION"] ?? process.env["GITHUB_ACTION"]) + `__step_${stepIndex}`,
-                                "X_GITHUB_ACTION": (process.env["X_GITHUB_ACTION"] ?? process.env["GITHUB_ACTION"]) + `__step_${stepIndex}`,
+                            Object.assign(step, {
+                                needs: undefined, // 'needs:' field is only valid for parallel steps, therefor we need to clear it
+                                // TODO move to file in temp directory
+                                env: Object.assign(step.env ?? {}, {
+                                    // WORKAROUND
+                                    // GITHUB_ACTION cant be overwritten by act --env nor by core.exportVariable of the interceptor pre-step,
+                                    // therefore a workaround we need to set it as an environment variable of the step itself.
+                                    "GITHUB_ACTION": (process.env["X_GITHUB_ACTION"] ?? process.env["GITHUB_ACTION"]) + `__step_${stepIndex}`,
+                                    "X_GITHUB_ACTION": (process.env["X_GITHUB_ACTION"] ?? process.env["GITHUB_ACTION"]) + `__step_${stepIndex}`,
+                                }),
                             }),
-                        }),
-                        {
-                            if: "always()",
-                            uses: "__/act-interceptor@local",
-                            with: {
-                                'step': 'Post',
-                                'temp-dir': ACTION_STEP_TEMP_DIR,
+                            {
+                                if: "always()",
+                                uses: "__/act-interceptor@local",
+                                with: {
+                                    'step': 'Post',
+                                    'temp-dir': ACTION_STEP_TEMP_DIR, // TODO move to file in temp directory
+                                },
                             },
-                        },
-                    ],
+                        ],
+                    }
                 }
-            }))),
+            })),
     }
 
     const workflowFilePath = path.join(ACTION_STEP_TEMP_DIR, 'steps-workflow.yaml');
@@ -524,6 +539,15 @@ function getInput(name, options, fn) {
     const value = core.getInput(name, options);
     return fn(value);
 }
+
+function isInt(value) {
+    if (typeof value === 'string' && value.trim()) {
+        value = Number(value);
+    }
+
+    return Number.isInteger(value);
+}
+
 
 /**
  * Parses a line from the act log file.
