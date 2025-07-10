@@ -14,6 +14,7 @@ jobs:
           steps: |
             - uses: actions/checkout@v4
             - name : Test File Creation
+              needs: [0]
               run: |
                 echo Step1
                 echo Step1 > test-file.txt

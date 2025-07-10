@@ -3,7 +3,6 @@ import fs from "node:fs/promises";
 import YAML from "yaml";
 import path from "node:path";
 import {fileURLToPath} from "url";
-import os from 'os';
 import readline from "node:readline";
 import {ACTION_STEP_TEMP_DIR, colorize, CompletablePromise, TRACE} from "./act-interceptor/utils.js";
 import core from "@actions/core";
@@ -115,7 +114,7 @@ export async function run(stage) {
     } else {
         const stages = ['Pre', 'Main', 'Post'];
         const previousStage = stages[stages.indexOf(stage) - 1];
-        const previousStageFilePath = path.join(ACTION_STEP_TEMP_DIR, `.Interceptor-${previousStage}-Stage`);
+        const previousStageFilePath = path.join(ACTION_STEP_TEMP_DIR, `.Interceptor-Stage-${previousStage}-Start`);
         const skip = !await fs.access(previousStageFilePath).then(() => true).catch(() => false);
         if (skip) {
             core.debug(`Skipping ${stage} stage`);
@@ -310,7 +309,7 @@ export async function run(stage) {
         });
 
     // --- create the trigger file to signal step runner to start the next stage
-    await fs.writeFile(path.join(ACTION_STEP_TEMP_DIR, `.Interceptor-${stage}-Stage`), '');
+    await fs.writeFile(path.join(ACTION_STEP_TEMP_DIR, `.Interceptor-Stage-${stage}-Start`), '');
 
     await stagePromise
         .finally(() => actLogTail.quit());
@@ -364,6 +363,13 @@ export async function run(stage) {
                 buildStepIndicator(stepIndex) +
                 colorize(`__::Step::${stage}::End::`, 'Blue', true),
             );
+            // create a file to signal the end of the main stage for this jobId
+            await fs.writeFile(
+                path.join(ACTION_STEP_TEMP_DIR, `.Interceptor-Job-${stepIndexToJobId(stepIndex)}-Completed`),
+                JSON.stringify({
+                    outcome: stepResult.outcome,
+                    conclusion: stepResult.conclusion,
+                }));
         } else if (stepResult.status === 'Queued') {
             stepResult.status = 'Completed';
             // do nothing, the step was never started
@@ -451,6 +457,10 @@ export async function run(stage) {
     }
 }
 
+function stepIndexToJobId(stepIndex) {
+    return `Step${stepIndex}`;
+}
+
 async function startAct(steps, defaults, githubToken, logFilePath) {
     const workflow = {
         on: process.env["GITHUB_EVENT_NAME"],
@@ -459,9 +469,9 @@ async function startAct(steps, defaults, githubToken, logFilePath) {
             // Make a deep copy of the step to avoid modifying the input steps
             .map(([stepIndex, step]) => [stepIndex, JSON.parse(JSON.stringify(step))])
             .map(([stepIndex, step]) => {
-                const stepIndexToJobId = stepIndex => `Step${stepIndex}`;
+                const jobId = stepIndexToJobId(stepIndex);
                 return {
-                    [stepIndexToJobId(stepIndex)]: {
+                    [jobId]: {
                         "runs-on": "host", // refers to gh act parameter "--platform", "host=-self-hosted",
                         "steps": [
                             {
@@ -469,8 +479,15 @@ async function startAct(steps, defaults, githubToken, logFilePath) {
                                 with: {
                                     'step': 'Pre',
                                     'temp-dir': ACTION_STEP_TEMP_DIR, // TODO move to file in temp directory
+                                    'jobId': jobId,
+
                                     'host-working-directory': process.cwd(), // TODO move to file in temp directory
                                     'host-env': JSON.stringify(ACTION_ENV), // TODO move to file in temp directory
+                                    'needs': step.needs
+                                        // map prerequisite steps to step indices
+                                        ?.map((prerequisiteStep) => isInt(prerequisiteStep) ? parseInt(prerequisiteStep)
+                                            : steps.findIndex((step) => step.id === prerequisiteStep))
+                                        ?.map(stepIndexToJobId)?.join(','),
                                 },
                             },
                             Object.assign(step, {
@@ -490,6 +507,7 @@ async function startAct(steps, defaults, githubToken, logFilePath) {
                                 with: {
                                     'step': 'Post',
                                     'temp-dir': ACTION_STEP_TEMP_DIR, // TODO move to file in temp directory
+                                    'jobId': jobId,
                                 },
                             },
                         ],
