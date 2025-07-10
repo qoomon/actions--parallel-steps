@@ -3,7 +3,6 @@ import fs from "node:fs/promises";
 import YAML from "yaml";
 import path from "node:path";
 import {fileURLToPath} from "url";
-import os from 'os';
 import readline from "node:readline";
 import {ACTION_STEP_TEMP_DIR, colorize, CompletablePromise, TRACE} from "./act-interceptor/utils.js";
 import core from "@actions/core";
@@ -76,27 +75,50 @@ const inputs = {
 }
 
 export async function run(stage) {
-    const stepResults = inputs.steps.map((step) => [step, {
-        status: 'Queued',
-        output: '',
-        outputGroup: false,
-        outcome: null,
-        continueOnError: false,
-        executionTime: null,
-        commands: {
-            output: {},
-            env: {},
-            path: [],
-            summary: [],
-            mask: [],
-        },
-        get conclusion() {
-            if (this.continueOnError && this.outcome === 'failure') {
-                return 'success';
+    const steps = inputs.steps.map((step, index) => ({
+        index,
+        actJobId: `Step${index}`,
+        // map prerequisite steps to step indices
+        needs: step.needs?.map((prerequisiteStep, index) => {
+            const prerequisiteStepIndex = isInt(prerequisiteStep) ? parseInt(prerequisiteStep)
+                : inputs.steps.findIndex((step) => step.id === prerequisiteStep)
+            if (prerequisiteStepIndex < 0 || prerequisiteStepIndex >= inputs.steps.length) {
+                throw new Error(`Invalid value for steps.${index}.needs: ${prerequisiteStep}.`)
             }
-            return this.outcome;
+            return prerequisiteStepIndex;
+        }),
+
+        config: {
+            ...step,
+            needs: undefined,
         },
-    }]);
+        result: {
+            status: 'Queued', // Queued, In Progress or Completed
+            output: '',
+            outputGroup: false,
+            outcome: null,
+            continueOnError: false,
+            executionTime: null,
+            commands: {
+                /** @type {Record<string,string>} */
+                output: {},
+                /** @type {Record<string,string>} */
+                env: {},
+                /** @type {Array<string>} */
+                path: [],
+                /** @type {Array<string>} */
+                summary: [],
+                /** @type {Array<string>} */
+                mask: [],
+            },
+            get conclusion() {
+                if (this.continueOnError && this.outcome === 'failure') {
+                    return 'success';
+                }
+                return this.outcome;
+            },
+        }
+    }));
 
     let concurrentLogGroup = false
 
@@ -111,11 +133,11 @@ export async function run(stage) {
 
     if (stage === 'Pre') {
         await fs.writeFile(actLogFilePath, ''); // ensure the act log file exists
-        await startAct(inputs.steps, inputs.defaults, inputs.githubToken, actLogFilePath);
+        await startAct(steps, inputs.defaults, inputs.githubToken, actLogFilePath);
     } else {
-        const stages = ['Pre', 'Main', 'Post'];
-        const previousStage = stages[stages.indexOf(stage) - 1];
-        const previousStageFilePath = path.join(ACTION_STEP_TEMP_DIR, `.Interceptor-${previousStage}-Stage`);
+        const stageOrder = ['Pre', 'Main', 'Post'];
+        const previousStage = stageOrder[stageOrder.indexOf(stage) - 1];
+        const previousStageFilePath = path.join(ACTION_STEP_TEMP_DIR, `.Stage-${previousStage}-Start`);
         const skip = !await fs.access(previousStageFilePath).then(() => true).catch(() => false);
         if (skip) {
             core.debug(`Skipping ${stage} stage`);
@@ -151,8 +173,9 @@ export async function run(stage) {
                     let error = new Error(`${line.error} - ${line.msg}`)
                     if (line.error === 'workflow is not valid') {
                         const workflowStepError = line.msg.match(/Failed to match run-step: Line: (?<line>\d+) Column (?<column>\d+): (?<msg>.*)$/)?.groups;
-                        error = new Error(`Invalid steps input` +
-                            ` - Line: ${workflowStepError.line - 11} Column ${workflowStepError.column - 6}: ${workflowStepError?.msg ?? line.msg}`)
+                        error = new Error(`Invalid steps input` + (workflowStepError
+                            ? ` - Line: ${workflowStepError.line - 11} Column ${workflowStepError.column - 6}: ${workflowStepError?.msg ?? line.msg}`
+                            : ` - ${line.msg}`));
                     }
                     stagePromise.reject(error);
                     return;
@@ -161,21 +184,20 @@ export async function run(stage) {
 
             if (!line.jobID) return;
             const stepIndex = parseInt(line.jobID.replace(/^\D*/, ''));
-
-            const [step, stepResult] = stepResults[stepIndex];
-            if (!stepResult) throw Error(`Unexpected step index: ${stepIndex}`);
+            const step = steps[stepIndex];
+            if (!step) throw Error(`Unexpected step index: ${stepIndex}`);
 
             // actual step lines
-            const stepId = step.id ?? String(1);
+            const stepId = step.config.id ?? String(1);
             if (line.stepID?.[0] === stepId) {
                 if (!line.raw_output) {
                     if (line.event === 'Start') {
                         await startStep(stepIndex);
                     } else if (line.event === 'ContinueOnError') {
-                        stepResult.continueOnError = true;
+                        step.result.continueOnError = true;
                     } else if (line.event === 'End') {
-                        stepResult.executionTime = line.executionTime;
-                        stepResult.outcome = line.stepResult;
+                        step.result.executionTime = line.executionTime;
+                        step.result.outcome = line.stepResult;
                         // NOTE: endStep(...) is called at __::interceptor:: end event
                     } else if (line.command) {
                         // command files
@@ -187,36 +209,36 @@ export async function run(stage) {
                                     buildStepIndicator(stepIndex) +
                                     msg,
                                 );
-                                stepResult.output += msg + EOL;
-                                stepResult.outputGroup = true
+                                step.result.output += msg + EOL;
+                                step.result.outputGroup = true
                                 break;
                             }
                             case 'endgroup':
-                                stepResult.outputGroup = false
+                                step.result.outputGroup = false
                                 break;
 
                             case 'add-matcher':
                             case 'remove-matcher':
-                                stepResult.output += line.raw + EOL;
+                                step.result.output += line.raw + EOL;
                                 break;
 
                             case 'set-output':
-                                stepResult.commands.output[line.name] = line.arg;
+                                step.result.commands.output[line.name] = line.arg;
                                 break;
                             case 'set-env':
                                 // skip GITHUB_ENV variables that are passed to and set by the interceptor action, see startAct()
                                 if (!Object.keys(ACTION_ENV).includes(line.arg)) {
-                                    stepResult.commands.env[line.name] = line.arg;
+                                    step.result.commands.env[line.name] = line.arg;
                                 }
                                 break;
                             case 'add-path':
-                                stepResult.commands.path.push(line.arg);
+                                step.result.commands.path.push(line.arg);
                                 break;
                             case 'summary':
-                                stepResult.commands.summary.push(line.content);
+                                step.result.commands.summary.push(line.content);
                                 break;
                             case 'add-mask':
-                                stepResult.commands.mask.push(line.arg);
+                                step.result.commands.mask.push(line.arg);
                                 break;
 
                             case 'notice':
@@ -241,10 +263,10 @@ export async function run(stage) {
                                 concurrentLog(
                                     buildStepLogPrefix() +
                                     buildStepIndicator(stepIndex) +
-                                    (stepResult.outputGroup ? `  ${concurrentLogMsg}` : concurrentLogMsg),
+                                    (step.result.outputGroup ? `  ${concurrentLogMsg}` : concurrentLogMsg),
                                 );
 
-                                stepResult.output += (stepResult.outputGroup
+                                step.result.output += (step.result.outputGroup
                                     ? line.raw.replace(/(::[^:]+::)/, '$1  ')
                                     : line.raw) + EOL;
                                 break;
@@ -257,7 +279,7 @@ export async function run(stage) {
                                     buildStepIndicator(stepIndex) +
                                     line.raw,
                                 );
-                                stepResult.output += line.raw + EOL;
+                                step.result.output += line.raw + EOL;
                         }
                     } else if (line.level === 'error') {
                         if (line.msg.startsWith('failed to fetch ')) {
@@ -266,9 +288,9 @@ export async function run(stage) {
                             concurrentLog(
                                 buildStepLogPrefix() +
                                 buildStepIndicator(stepIndex) +
-                                (stepResult.outputGroup ? `  ${colorize(errorMessage, 'Red', true)}` : colorize(errorMessage, 'Red', true)),
+                                (step.result.outputGroup ? `  ${colorize(errorMessage, 'Red', true)}` : colorize(errorMessage, 'Red', true)),
                             );
-                            stepResult.output += '::error::' + (stepResult.outputGroup ? `  ${errorMessage}` : errorMessage) + EOL;
+                            step.result.output += '::error::' + (step.result.outputGroup ? `  ${errorMessage}` : errorMessage) + EOL;
                             await endStep(stepIndex, 'error');
                         }
                     }
@@ -282,7 +304,7 @@ export async function run(stage) {
                     concurrentLog(
                         buildStepLogPrefix() +
                         buildStepIndicator(stepIndex) +
-                        (stepResult.outputGroup ? `  ${concurrentLogMsg}` : concurrentLogMsg),
+                        (step.result.outputGroup ? `  ${concurrentLogMsg}` : concurrentLogMsg),
                     );
 
                     let outputMsg = line.msg;
@@ -290,7 +312,7 @@ export async function run(stage) {
                         outputMsg = outputMsg.replace(/^\[command]/, '')
                         outputMsg = colorize(outputMsg, 'Blue');
                     }
-                    stepResult.output += (stepResult.outputGroup ? `  ${outputMsg}` : outputMsg) + EOL;
+                    step.result.output += (step.result.outputGroup ? `  ${outputMsg}` : outputMsg) + EOL;
                 }
             } else if (line.raw_output) {
                 const interceptorEvent = line.msg.match(/^__::Interceptor::(?<stage>[^:]+)::(?<type>[^:]+)::(?<value>[^:]*)?/)?.groups;
@@ -302,15 +324,23 @@ export async function run(stage) {
                     }
                 }
             } else if (line.jobResult) {
-                if (stepResult.status !== 'Completed') {
+                if (step.result.status !== 'Completed') {
                     const result = stage !== 'Post' ? 'error' : null;
                     await endStep(stepIndex, result);
                 }
             }
         });
 
-    // --- create the trigger file to signal step runner to start the next stage
-    await fs.writeFile(path.join(ACTION_STEP_TEMP_DIR, `.Interceptor-${stage}-Stage`), '');
+    await fs.writeFile(path.join(ACTION_STEP_TEMP_DIR, `.Stage-${stage}-Start`), '');
+    // --- create the trigger files to signal act interceptor to start the next step
+    steps.forEach((step) => {
+        const trigger = stage === 'Main'
+            ? (!step.needs || step.needs.length === 0)
+            : true;
+        if (trigger) {
+            fs.writeFile(path.join(ACTION_STEP_TEMP_DIR, `.Interceptor-Stage-${stage}-Start-${step.actJobId}`), '');
+        }
+    });
 
     await stagePromise
         .finally(() => actLogTail.quit());
@@ -325,68 +355,68 @@ export async function run(stage) {
     }
 
     async function startStep(stepIndex) {
-        const [step, stepResult] = stepResults[stepIndex];
+        const step = steps[stepIndex];
 
-        stepResult.status = 'In Progress';
+        step.result.status = 'In Progress';
 
         core.debug(buildStepLogPrefix() +
-            buildStepIndicator(stepIndex) +
+            buildStepIndicator(step.index) +
             colorize(`__::Step::${stage}::Start::`, 'Blue', true)
         );
         concurrentLog(
             buildStepLogPrefix('Start') +
-            buildStepIndicator(stepIndex) +
-            buildStepHeadline(stage, step),
+            buildStepIndicator(step.index) +
+            buildStepHeadline(stage, step.config),
         );
     }
 
     async function endStep(stepIndex, outcome) {
-        const [step, stepResult] = stepResults[stepIndex];
+        const step = steps[stepIndex];
 
         if (outcome) {
-            stepResult.outcome = outcome === 'error' ? 'failure' : outcome;
+            step.result.outcome = outcome === 'error' ? 'failure' : outcome;
         }
-        if (stepResult.outcome === null) {
-            stepResult.outcome = 'skipped';
+        if (step.result.outcome === null) {
+            step.result.outcome = 'skipped';
         }
-        if (stepResult.outcome === 'error') {
+        if (step.result.outcome === 'error') {
             await fs.appendFile(errorStepsFilePath, stepIndex + EOL);
         }
 
-        if (stepResult.status === 'In Progress') {
-            stepResult.status = 'Completed';
+        if (step.result.status === 'In Progress') {
+            step.result.status = 'Completed';
             concurrentLog(
-                buildStepLogPrefix('End', stepResult.conclusion) +
+                buildStepLogPrefix('End', step.result.conclusion) +
                 buildStepIndicator(stepIndex) +
-                buildStepHeadline(stage, step, stepResult),
+                buildStepHeadline(stage, step.config, step.result.executionTime),
             );
             core.debug(buildStepLogPrefix() +
                 buildStepIndicator(stepIndex) +
                 colorize(`__::Step::${stage}::End::`, 'Blue', true),
             );
-        } else if (stepResult.status === 'Queued') {
-            stepResult.status = 'Completed';
+        } else if (step.result.status === 'Queued') {
+            step.result.status = 'Completed';
             // do nothing, the step was never started
         } else {
-            throw new Error(`Unexpected step result. Step was not running: ${stepIndex}, was ${stepResult.status}`);
+            throw new Error(`Unexpected step result. Step was not running: ${step.index}, was ${step.result.status}`);
         }
 
         // check if the stage has been completed
-        if (stepResults.every(([_, stepResult]) => stepResult.status === 'Completed')) {
+        if (steps.every((step) => step.result.status === 'Completed')) {
             if (concurrentLogGroup) {
                 core.endGroup();
                 console.log('');
             }
 
-            stepResults
-                .filter(([_, stepResult]) => stepResult.outcome !== 'skipped')
-                .forEach(([step, stepResult], completedStepsIndex, completedSteps) => {
+            steps
+                .filter((step) => step.result.outcome !== 'skipped')
+                .forEach((step, completedStepsIndex, completedSteps) => {
                     // log aggregated step results
                     core.startGroup(' ' +
-                        buildStepLogPrefix('End', stepResult.conclusion) +
-                        buildStepHeadline(stage, step, stepResult)
+                        buildStepLogPrefix('End', step.result.conclusion) +
+                        buildStepHeadline(stage, step.config, step.result.executionTime),
                     );
-                    console.log(removeTrailingNewLine(stepResult.output));
+                    console.log(removeTrailingNewLine(step.result.output));
                     core.endGroup();
 
                     // add a new line between steps
@@ -395,7 +425,7 @@ export async function run(stage) {
                     }
 
                     // command files
-                    Object.entries(stepResult.commands.output).forEach(([key, value]) => {
+                    Object.entries(step.result.commands.output).forEach(([key, value]) => {
                         core.debug(colorize(`Set output: ${key}=${value}`, 'Purple'));
                         core.setOutput(key, value);
                         if (step.id) {
@@ -404,49 +434,58 @@ export async function run(stage) {
                             core.setOutput(stepKey, value);
                         }
                     });
-                    Object.entries(stepResult.commands.env).forEach(([key, value]) => {
+                    Object.entries(step.result.commands.env).forEach(([key, value]) => {
                         core.debug(colorize(`Set env: ${key}=${value}`, 'Purple'));
                         core.exportVariable(key, value);
                     });
-                    stepResult.commands.path.forEach((path) => {
+                    step.result.commands.path.forEach((path) => {
                         core.debug(colorize(`Add path: ${path}`, 'Purple'));
                         core.addPath(path);
                     });
-                    stepResult.commands.summary.forEach((summary) => {
+                    step.result.commands.summary.forEach((summary) => {
                         core.debug(colorize(`Step summary: ${summary}`, 'Purple'));
                         core.summary.addRaw(summary, true).write();
                     });
 
-                    stepResult.commands.mask.forEach((mask) => {
+                    step.result.commands.mask.forEach((mask) => {
                         core.debug(colorize(`Add mask: ***`, 'Purple'));
                         core.setSecret(mask);
                     });
                 });
 
             if (stage === 'Main') {
-                stepResults
-                    .filter(([step, _]) => step.id)
-                    .forEach(([step, stepResult]) => {
-                        const outcomeKey = step.id + '--outcome';
-                        core.debug(colorize(`Set output: ${outcomeKey}=${stepResult.outcome}`, 'Purple'));
-                        core.setOutput(outcomeKey, stepResult.outcome);
+                steps
+                    .filter((step) => step.config.id)
+                    .forEach((step) => {
+                    const outcomeKey = step.config.id + '--outcome';
+                    core.debug(colorize(`Set output: ${outcomeKey}=${step.result.outcome}`, 'Purple'));
+                    core.setOutput(outcomeKey, step.result.outcome);
 
-                        const conclusionKey = step.id + '--conclusion';
-                        core.debug(colorize(`Set output: ${conclusionKey}=${stepResult.conclusion}`, 'Purple'));
-                        core.setOutput(conclusionKey, stepResult.conclusion);
-                    })
+                    const conclusionKey = step.config.id + '--conclusion';
+                    core.debug(colorize(`Set output: ${conclusionKey}=${step.result.conclusion}`, 'Purple'));
+                    core.setOutput(conclusionKey, step.result.conclusion);
+                })
             }
 
             core.debug(colorize(`__::Act::${stage}::End::`, 'Purple', true));
 
             // complete stage promise
-            if (stepResults.every(([_, stepResult]) => stepResult.conclusion === 'success'
-                || stepResult.conclusion === 'skipped'
-                || !stepResult.conclusion)) {
+            if (steps.every((step) => step.result.conclusion === 'success'
+                || step.result.conclusion === 'skipped'
+                || !step.result.conclusion)) {
                 stagePromise.resolve();
             } else {
                 stagePromise.reject("step failure");
             }
+        } else if (stage === 'Main') {
+            const completedStep = step;
+            steps
+                .filter((step) => step.result.status === 'Queued'
+                    && step.needs?.includes(completedStep.index)
+                    && step.needs.every((stepIndex) => steps[stepIndex].result.outcome === 'success'))
+                .forEach((step) => {
+                    fs.writeFile(path.join(ACTION_STEP_TEMP_DIR, `.Interceptor-Stage-${stage}-Start-${step.actJobId}`), '');
+                })
         }
     }
 }
@@ -455,51 +494,49 @@ async function startAct(steps, defaults, githubToken, logFilePath) {
     const workflow = {
         on: process.env["GITHUB_EVENT_NAME"],
         defaults: defaults ?? undefined,
-        jobs: Object.assign({}, ...Object.entries(steps)
-            // Make a deep copy of the step to avoid modifying the input steps
-            .map(([stepIndex, step]) => [stepIndex, JSON.parse(JSON.stringify(step))])
-            .map(([stepIndex, step]) => {
-                const stepIndexToJobId = stepIndex => `Step${stepIndex}`;
-                return {
-                    [stepIndexToJobId(stepIndex)]: {
-                        "runs-on": "host", // refers to gh act parameter "--platform", "host=-self-hosted",
-                        "steps": [
-                            {
-                                uses: "__/act-interceptor@local",
-                                with: {
-                                    'step': 'Pre',
-                                    'temp-dir': ACTION_STEP_TEMP_DIR, // TODO move to file in temp directory
-                                    'host-working-directory': process.cwd(), // TODO move to file in temp directory
-                                    'host-env': JSON.stringify(ACTION_ENV), // TODO move to file in temp directory
-                                },
-                            },
-                            Object.assign(step, {
-                                needs: undefined, // 'needs:' field is only valid for parallel steps, therefor we need to clear it
-                                // TODO move to file in temp directory
-                                env: Object.assign(step.env ?? {}, {
-                                    // WORKAROUND
-                                    // GITHUB_ACTION cant be overwritten by act --env nor by core.exportVariable of the interceptor pre-step,
-                                    // therefore a workaround we need to set it as an environment variable of the step itself.
-                                    "GITHUB_ACTION": (process.env["X_GITHUB_ACTION"] ?? process.env["GITHUB_ACTION"]) + `__step_${stepIndex}`,
-                                    "X_GITHUB_ACTION": (process.env["X_GITHUB_ACTION"] ?? process.env["GITHUB_ACTION"]) + `__step_${stepIndex}`,
-                                }),
-                            }),
-                            {
-                                if: "always()",
-                                uses: "__/act-interceptor@local",
-                                with: {
-                                    'step': 'Post',
-                                    'temp-dir': ACTION_STEP_TEMP_DIR, // TODO move to file in temp directory
-                                },
-                            },
-                        ],
-                    }
-                }
-            })),
+        jobs: Object.fromEntries(steps.map((step) => [step.actJobId, {
+            "runs-on": "host", // refers to gh act parameter "--platform", "host=-self-hosted",
+            "steps": [
+                {
+                    uses: "__/act-interceptor@local",
+                    with: {
+                        'step': 'Pre',
+                        'temp-dir': ACTION_STEP_TEMP_DIR, // TODO move to file in temp directory
+                        'act-job-id': step.actJobId,
+
+                        'host-working-directory': process.cwd(), // TODO move to file in temp directory
+                        'host-env': JSON.stringify(ACTION_ENV), // TODO move to file in temp directory
+                    },
+                },
+                {
+                    ...step.config,
+                    // WORKAROUND
+                    // GITHUB_ACTION cant be overwritten by act --env nor by core.exportVariable of the interceptor pre-step,
+                    // therefore a workaround we need to set it as an environment variable of the step itself.
+                    env: {
+                        ...step.config.env,
+                        // TODO move to file in temp directory
+                        "GITHUB_ACTION": (process.env["X_GITHUB_ACTION"] ?? process.env["GITHUB_ACTION"]) + `__${step.index}`,
+                        "X_GITHUB_ACTION": (process.env["X_GITHUB_ACTION"] ?? process.env["GITHUB_ACTION"]) + `__${step.index}`,
+                    },
+                },
+                {
+                    if: "always()",
+                    uses: "__/act-interceptor@local",
+                    with: {
+                        'step': 'Post',
+                        'temp-dir': ACTION_STEP_TEMP_DIR, // TODO move to file in temp directory
+                        'act-job-id': step.actJobId,
+                    },
+                },
+            ],
+        }])),
     }
 
     const workflowFilePath = path.join(ACTION_STEP_TEMP_DIR, 'steps-workflow.yaml');
-    await fs.writeFile(workflowFilePath, YAML.stringify(workflow));
+    const workflowYaml = YAML.stringify(workflow);
+    TRACE && console.log('act step workflow:\n', colorize(workflowYaml, 'green'))
+    await fs.writeFile(workflowFilePath, workflowYaml);
 
     const actLogFile = await fs.open(logFilePath, 'w');
     // noinspection JSCheckFunctionSignatures
@@ -641,7 +678,7 @@ function removeTrailingNewLine(text) {
     return text.replace(/\n$/, '');
 }
 
-function buildStepHeadline(actStage, step, jobResult = null) {
+function buildStepHeadline(actStage, step, executionTime) {
     let groupHeadline = '';
 
     if (actStage !== 'Main') {
@@ -650,8 +687,8 @@ function buildStepHeadline(actStage, step, jobResult = null) {
 
     groupHeadline += `Run ${buildStepDisplayName(step)}`;
 
-    if (jobResult?.executionTime) {
-        groupHeadline += colorize(` [${formatMilliseconds(jobResult.executionTime / 1_000_000)}]`, 'Gray', true);
+    if (executionTime) {
+        groupHeadline += colorize(` [${formatMilliseconds(executionTime / 1_000_000)}]`, 'Gray', true);
     }
 
     return groupHeadline;

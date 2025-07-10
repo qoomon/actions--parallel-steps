@@ -4,6 +4,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 const step = core.getInput('step', {required: true});
+const tempDir = core.getInput("temp-dir", {required: true});
+const actJobId = core.getInput("act-job-id", {required: true});
+
 if (step === 'Pre') {
     const hostEnv = JSON.parse(core.getInput("host-env", {required: true}));
     // set host environment variables
@@ -18,7 +21,6 @@ if (step === 'Pre') {
     await fs.symlink(hostWorkingDirectory, jobWorkingDirectory);
 
     const stage = 'Pre';
-    const tempDir = core.getInput("temp-dir", {required: true});
-    await untilFilePresent(path.join(tempDir, `.Interceptor-${stage}-Stage`));
+    await untilFilePresent(path.join(tempDir, `.Interceptor-Stage-${stage}-Start-${actJobId}`));
     console.log(`__::Interceptor::${stage}::Start::`);
 }
