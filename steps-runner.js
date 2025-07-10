@@ -8,6 +8,7 @@ import {ACTION_STEP_TEMP_DIR, colorize, CompletablePromise, TRACE} from "./act-i
 import core from "@actions/core";
 import {EOL} from "node:os";
 import TailFile from "@logdna/tail-file";
+import * as actInterceptor from "./act-interceptor/act-interceptor.js";
 
 export const GH_ACT_VERSION = '0.2.79';
 
@@ -32,11 +33,12 @@ const errorStepsFilePath = path.join(ACTION_STEP_TEMP_DIR, '.error-steps');
 
 const inputs = {
     githubToken: core.getInput("token", {required: true}),
+    /** @type {Array<{
+     *   id?: string,
+     *   name?: string,
+     *   needs?: Array<string|number>,
+     * }>} */
     steps: getInput("steps", {required: true}, (value) => {
-        /** @type {Array<{
-         * id?: string,
-         * name?: string,
-         * }>} */
         let steps;
         try {
             steps = YAML.parse(value);
@@ -137,6 +139,7 @@ export async function run(stage) {
     } else {
         const stageOrder = ['Pre', 'Main', 'Post'];
         const previousStage = stageOrder[stageOrder.indexOf(stage) - 1];
+        // TODO refactor stage run indicator (also see below)
         const previousStageFilePath = path.join(ACTION_STEP_TEMP_DIR, `.Stage-${previousStage}-Start`);
         const skip = !await fs.access(previousStageFilePath).then(() => true).catch(() => false);
         if (skip) {
@@ -188,8 +191,7 @@ export async function run(stage) {
             if (!step) throw Error(`Unexpected step index: ${stepIndex}`);
 
             // actual step lines
-            const stepId = step.config.id ?? String(1);
-            if (line.stepID?.[0] === stepId) {
+            if (line.stepID?.[0] === 'main') {
                 if (!line.raw_output) {
                     if (line.event === 'Start') {
                         await startStep(stepIndex);
@@ -201,6 +203,7 @@ export async function run(stage) {
                         // NOTE: endStep(...) is called at __::interceptor:: end event
                     } else if (line.command) {
                         // command files
+                        // noinspection SpellCheckingInspection
                         switch (line.command) {
                             case 'group': {
                                 const msg = `▼ ${line.arg}`;
@@ -331,16 +334,15 @@ export async function run(stage) {
             }
         });
 
+    // TODO refactor stage run indicator
     await fs.writeFile(path.join(ACTION_STEP_TEMP_DIR, `.Stage-${stage}-Start`), '');
-    // --- create the trigger files to signal act interceptor to start the next step
-    steps.forEach((step) => {
-        const trigger = stage === 'Main'
-            ? (!step.needs || step.needs.length === 0)
-            : true;
-        if (trigger) {
-            fs.writeFile(path.join(ACTION_STEP_TEMP_DIR, `.Interceptor-Stage-${stage}-Start-${step.actJobId}`), '');
-        }
-    });
+
+    let initialSteps = steps;
+    if (stage === 'Main') {
+        // only trigger those steps that do not have prerequisites
+        initialSteps = initialSteps.filter((step => step.needs === undefined || step.needs.length === 0))
+    }
+    initialSteps.forEach((step) => actInterceptor.triggerStage(ACTION_STEP_TEMP_DIR, stage, step.actJobId));
 
     await stagePromise
         .finally(() => actLogTail.quit());
@@ -409,7 +411,7 @@ export async function run(stage) {
             }
 
             steps
-                .filter((step) => step.result.outcome !== 'skipped')
+                .filter((step) => stage === "Main" || step.result.conclusion !== 'skipped')
                 .forEach((step, completedStepsIndex, completedSteps) => {
                     // log aggregated step results
                     core.startGroup(' ' +
@@ -457,14 +459,14 @@ export async function run(stage) {
                 steps
                     .filter((step) => step.config.id)
                     .forEach((step) => {
-                    const outcomeKey = step.config.id + '--outcome';
-                    core.debug(colorize(`Set output: ${outcomeKey}=${step.result.outcome}`, 'Purple'));
-                    core.setOutput(outcomeKey, step.result.outcome);
+                        const outcomeKey = step.config.id + '--outcome';
+                        core.debug(colorize(`Set output: ${outcomeKey}=${step.result.outcome}`, 'Purple'));
+                        core.setOutput(outcomeKey, step.result.outcome);
 
-                    const conclusionKey = step.config.id + '--conclusion';
-                    core.debug(colorize(`Set output: ${conclusionKey}=${step.result.conclusion}`, 'Purple'));
-                    core.setOutput(conclusionKey, step.result.conclusion);
-                })
+                        const conclusionKey = step.config.id + '--conclusion';
+                        core.debug(colorize(`Set output: ${conclusionKey}=${step.result.conclusion}`, 'Purple'));
+                        core.setOutput(conclusionKey, step.result.conclusion);
+                    })
             }
 
             core.debug(colorize(`__::Act::${stage}::End::`, 'Purple', true));
@@ -482,54 +484,67 @@ export async function run(stage) {
             steps
                 .filter((step) => step.result.status === 'Queued'
                     && step.needs?.includes(completedStep.index)
-                    && step.needs.every((stepIndex) => steps[stepIndex].result.outcome === 'success'))
+                    // check if all prerequisite steps have been completed
+                    && step.needs.every((stepIndex) => steps[stepIndex].result.status === 'Completed')
+                )
                 .forEach((step) => {
-                    fs.writeFile(path.join(ACTION_STEP_TEMP_DIR, `.Interceptor-Stage-${stage}-Start-${step.actJobId}`), '');
+                    const skip = step.needs.some((stepIndex) => steps[stepIndex].result.conclusion !== 'success');
+                    actInterceptor.triggerStage(ACTION_STEP_TEMP_DIR, stage, step.actJobId, skip ? 'skip' : 'continue');
                 })
+
         }
     }
 }
 
 async function startAct(steps, defaults, githubToken, logFilePath) {
+    const actInterceptorConfig = {
+        host: {
+            tempDir: ACTION_STEP_TEMP_DIR,
+            workingDirectory: process.cwd(),
+            env: ACTION_ENV,
+        }
+
+    };
+    const actInterceptorConfigPath = path.join(ACTION_STEP_TEMP_DIR, 'steps-config.json');
+    await fs.writeFile(actInterceptorConfigPath, JSON.stringify(actInterceptorConfig));
+
+
     const workflow = {
         on: process.env["GITHUB_EVENT_NAME"],
         defaults: defaults ?? undefined,
         jobs: Object.fromEntries(steps.map((step) => [step.actJobId, {
-            "runs-on": "host", // refers to gh act parameter "--platform", "host=-self-hosted",
+            "runs-on": "host", // refers to gh act command parameter "--platform host=-self-hosted",
             "steps": [
                 {
+                    id: 'pre',
                     uses: "__/act-interceptor@local",
                     with: {
+                        'config': actInterceptorConfigPath,
                         'step': 'Pre',
-                        'temp-dir': ACTION_STEP_TEMP_DIR, // TODO move to file in temp directory
                         'act-job-id': step.actJobId,
-
-                        'host-working-directory': process.cwd(), // TODO move to file in temp directory
-                        'host-env': JSON.stringify(ACTION_ENV), // TODO move to file in temp directory
                     },
                 },
                 {
                     ...step.config,
-                    // WORKAROUND
-                    // GITHUB_ACTION cant be overwritten by act --env nor by core.exportVariable of the interceptor pre-step,
-                    // therefore a workaround we need to set it as an environment variable of the step itself.
-                    env: {
-                        ...step.config.env,
-                        // TODO move to file in temp directory
-                        "GITHUB_ACTION": (process.env["X_GITHUB_ACTION"] ?? process.env["GITHUB_ACTION"]) + `__${step.index}`,
-                        "X_GITHUB_ACTION": (process.env["X_GITHUB_ACTION"] ?? process.env["GITHUB_ACTION"]) + `__${step.index}`,
-                    },
+                    id: 'main',
                 },
                 {
                     if: "always()",
                     uses: "__/act-interceptor@local",
                     with: {
+                        'config': actInterceptorConfigPath,
                         'step': 'Post',
-                        'temp-dir': ACTION_STEP_TEMP_DIR, // TODO move to file in temp directory
                         'act-job-id': step.actJobId,
                     },
                 },
             ],
+            "env": {
+                // WORKAROUND
+                // GITHUB_ACTION cant be overwritten by act --env nor by core.exportVariable of the interceptor pre-step,
+                // therefore we need to set it as an environment variable of the step itself.
+                "GITHUB_ACTION": process.env["GITHUB_ACTION"] + `_${step.index}`,
+                "X_GITHUB_ACTION": process.env["GITHUB_ACTION"] + `_${step.index}`,
+            },
         }])),
     }
 
@@ -539,7 +554,8 @@ async function startAct(steps, defaults, githubToken, logFilePath) {
     await fs.writeFile(workflowFilePath, workflowYaml);
 
     const actLogFile = await fs.open(logFilePath, 'w');
-    // noinspection JSCheckFunctionSignatures
+    // noinspection JSCheckFunctionSignatures, SpellCheckingInspection
+
     const actProcess = child_process.spawn(
         "gh", ["act", "--workflows", workflowFilePath,
             "--concurrent-jobs", steps.length,
@@ -551,7 +567,7 @@ async function startAct(steps, defaults, githubToken, logFilePath) {
             "--secret", `GITHUB_TOKEN=${githubToken}`,
             "--no-skip-checkout",
 
-            // TODO chek if needed
+            // TODO check if needed
             ...Object.entries(ACTION_ENV)
                 .map(([key, value]) => ['--env', `${key}=${value}`])
                 .flat(),
@@ -698,16 +714,21 @@ function buildStepLogPrefix(event, stepResult) {
     if (event === 'Start') {
         return colorize('○ ', 'Gray', true);
     }
-    if (event === 'Log' || !event) {
-        return colorize('  ', 'Gray', true);
-    }
+
     if (event === 'End') {
+        if (stepResult === 'skipped') {
+            return colorize('◯ ', 'Gray', true);
+        }
+
         // no job result indicates the step action has no stage implementation
-        if (!stepResult || stepResult === 'success' || stepResult === 'skipped') {
+        if (!stepResult || stepResult === 'success') {
             return colorize('⬤ ', 'Gray', true);
         }
+
         return colorize('⬤ ', 'Red', true);
     }
+
+    return colorize('  ', 'Gray', true);
 }
 
 function buildStepIndicator(stepIndex) {
@@ -752,6 +773,7 @@ export async function installDependencies() {
     const githubToken = core.getInput("token", {required: true});
     // Install gh-act extension
     const actVersionTag = `v${GH_ACT_VERSION}`;
+    // noinspection SpellCheckingInspection
     core.debug(`Installing gh cli extension nektos/gh-act@${actVersionTag} ...`);
     child_process.execSync(`gh extension install https://github.com/nektos/gh-act --pin ${actVersionTag}`, {
         stdio: 'inherit',

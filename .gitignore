@@ -1,3 +1,4 @@
 
 .idea
 /.github/workflows/playground.yaml
+/playground.js

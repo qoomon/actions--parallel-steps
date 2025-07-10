@@ -15,31 +15,8 @@ export const ACTION_STEP_TEMP_DIR = `${process.env["RUNNER_TEMP"]}/${process.env
     await fs.promises.mkdir(ACTION_STEP_TEMP_DIR, {recursive: true});
 }
 
-export async function untilFilePresent(filePath) {
-    const dirname = path.dirname(filePath);
-    const basename = path.basename(filePath);
-    if (!basename) throw new Error("Invalid file path: " + filePath);
-
-    const watcher = fs.promises.watch(dirname);
-    try {
-        await fs.promises.access(filePath);
-    } catch (e) {
-        for await (const {eventType, filename} of watcher) {
-            if (filename === basename && eventType === 'rename') {
-                break;
-            }
-        }
-    }
-}
-
 export function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-export function extendBasename(filePath, annex) {
-    const pathSplit = filePath.split('/');
-    pathSplit.push(pathSplit.pop().replace(/^([^.]+)/, '$1' + annex));
-    return pathSplit.join('/');
 }
 
 export function colorize(text, foregroundColor, bold = false) {
@@ -54,7 +31,7 @@ export function colorize(text, foregroundColor, bold = false) {
         'white': 37,
         'gray': 90
     }[foregroundColor.toLowerCase()];
-    if(!foregroundColorCode) {
+    if (!foregroundColorCode) {
         throw new Error(`Unsupported foreground color: ${foregroundColor}`);
     }
     const prefix = `\x1b[${bold ? 1 : 0};${foregroundColorCode}m`;

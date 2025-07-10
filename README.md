@@ -3,7 +3,11 @@
 
 With this action, you can run steps in parallel within a GitHub Actions workflow job. 
 
-Under the hood, this action utilize [act](https://github.com/nektos/act).
+You can even control the execution order of the steps by defining dependencies between them. 
+Use the `needs:` keyword to specify which steps need to be completed before the current step can however,
+you cant access the `steps.` context of the parallel steps.
+
+Under the hood, this action uses [act](https://github.com/nektos/act).
 
 ## Usage
 

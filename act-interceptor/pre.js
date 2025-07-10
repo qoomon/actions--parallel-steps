@@ -1,26 +1,26 @@
 import core from '@actions/core';
-import {untilFilePresent} from "./utils.js";
 import fs from "node:fs/promises";
-import path from "node:path";
+import {untilStageTrigger} from "./act-interceptor.js";
 
+const config = JSON.parse(
+    await fs.readFile(core.getInput("config", {required: true}))
+        .then((data) => data.toString()),
+);
 const step = core.getInput('step', {required: true});
-const tempDir = core.getInput("temp-dir", {required: true});
 const actJobId = core.getInput("act-job-id", {required: true});
 
 if (step === 'Pre') {
-    const hostEnv = JSON.parse(core.getInput("host-env", {required: true}));
     // set host environment variables
-    Object.entries(hostEnv).forEach(([name, val]) => {
+    Object.entries(config.host.env).forEach(([name, val]) => {
         core.exportVariable(name, val);
     });
 
-    const hostWorkingDirectory = core.getInput("host-working-directory", {required: true});
     // --- Link job working directory to host working directory
     const jobWorkingDirectory = process.cwd();
     await fs.rm(jobWorkingDirectory, {recursive: true});
-    await fs.symlink(hostWorkingDirectory, jobWorkingDirectory);
+    await fs.symlink(config.host.workingDirectory, jobWorkingDirectory);
 
     const stage = 'Pre';
-    await untilFilePresent(path.join(tempDir, `.Interceptor-Stage-${stage}-Start-${actJobId}`));
+    await untilStageTrigger(config.host.tempDir, stage, actJobId);
     console.log(`__::Interceptor::${stage}::Start::`);
 }

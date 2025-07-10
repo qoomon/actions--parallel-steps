@@ -1,9 +1,12 @@
 import core from "@actions/core";
-import {untilFilePresent} from "./utils.js";
-import path from "node:path";
+import {untilStageTrigger} from "./act-interceptor.js";
+import fs from "node:fs/promises";
 
+const config = JSON.parse(
+    await fs.readFile(core.getInput("config", {required: true}))
+        .then((data) => data.toString()),
+);
 const step = core.getInput('step', {required: true});
-const tempDir = core.getInput("temp-dir", {required: true});
 const actJobId = core.getInput("act-job-id", {required: true});
 
 if (step === 'Pre') {
@@ -13,7 +16,10 @@ if (step === 'Pre') {
     }
 
     const stage = 'Main';
-    await untilFilePresent(path.join(tempDir, `.Interceptor-Stage-${stage}-Start-${actJobId}`));
+    const action = await untilStageTrigger(config.host.tempDir, stage, actJobId);
+    if(action === 'skip') {
+        process.exit(1); // cancel the job to skip the main stage
+    }
     console.log(`__::Interceptor::${stage}::Start::`);
 } else if (step === 'Post') {
     const stage = 'Main';
@@ -22,7 +28,7 @@ if (step === 'Pre') {
     // --- start post-stage ---
     {
         const stage = 'Post';
-        await untilFilePresent(path.join(tempDir, `.Interceptor-Stage-${stage}-Start-${actJobId}`));
+        await untilStageTrigger(config.host.tempDir, stage, actJobId);
         console.log(`__::Interceptor::${stage}::Start::`);
     }
 } else {
