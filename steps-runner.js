@@ -49,10 +49,6 @@ export async function run(stage) {
             throw new Error(`Invalid steps input - Must be an YAML array`);
         }
 
-        if (steps.length > os.cpus().length) {
-            throw new Error(`Invalid steps input - Parallel steps are limited to the number of available CPUs (${os.cpus().length})`);
-        }
-
         const stepIds = new Set();
         for (const step of steps) {
             if (step.id !== undefined) {
