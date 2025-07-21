@@ -15,6 +15,7 @@ jobs:
       - uses: qoomon/actions--parallel-steps@v1
         id: parallel-steps
         with:
+          # defaults: # see https://docs.github.com/en/actions/reference/workflow-syntax-for-github-actions#defaults
           steps: |
             - run: echo Step0
             - uses: actions/checkout@v4
