@@ -19,8 +19,10 @@ jobs:
           steps: |
             - run: echo Step0
             - uses: actions/checkout@v4
+              id: checkout
             - uses: actions/github-script@v7
               id: greetings
+              needs: [ checkout ]
               with:
                 script: |
                   const recipient = 'world'
