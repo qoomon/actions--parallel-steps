@@ -775,14 +775,39 @@ export async function installDependencies() {
     const actVersionTag = `v${GH_ACT_VERSION}`;
     // noinspection SpellCheckingInspection
     core.debug(`Installing gh cli extension nektos/gh-act@${actVersionTag} ...`);
-    child_process.execSync(`gh extension install https://github.com/nektos/gh-act --pin ${actVersionTag}`, {
-        stdio: 'inherit',
-        env: {...process.env, GH_TOKEN: githubToken}
-    });
+    
+    try {
+        child_process.execSync(`gh extension install https://github.com/nektos/gh-act --pin ${actVersionTag}`, {
+            stdio: 'inherit',
+            env: {...process.env, GH_TOKEN: githubToken}
+        });
+    } catch (error) {
+        // Extension might already be installed, check if it's the right version
+        core.debug(`Extension installation failed (might already be installed): ${error.message}`);
+        try {
+            const installedActVersion = child_process.execSync("gh act --version").toString().trim()
+                .split(/\s/).at(-1);
+            core.debug(`Found installed gh act version: ${installedActVersion}`);
+            if (installedActVersion !== GH_ACT_VERSION) {
+                core.warning(`Installed gh act version (${installedActVersion}) does not match expected version (${GH_ACT_VERSION}).`);
+            }
+            return; // Successfully found working version
+        } catch (versionError) {
+            core.error(`Failed to check gh act version: ${versionError.message}`);
+            throw new Error(`Failed to install or verify gh act extension: ${error.message}`);
+        }
+    }
 
-    const installedActVersion = child_process.execSync("gh act --version").toString().trim()
-        .split(/\s/).at(-1);
-    if (installedActVersion !== GH_ACT_VERSION) {
-        core.warning(`Installed gh act version (${installedActVersion}) does not match expected version (${GH_ACT_VERSION}).`);
+    // Verify installation succeeded
+    try {
+        const installedActVersion = child_process.execSync("gh act --version").toString().trim()
+            .split(/\s/).at(-1);
+        core.debug(`Successfully installed gh act version: ${installedActVersion}`);
+        if (installedActVersion !== GH_ACT_VERSION) {
+            core.warning(`Installed gh act version (${installedActVersion}) does not match expected version (${GH_ACT_VERSION}).`);
+        }
+    } catch (versionError) {
+        core.error(`Failed to verify gh act installation: ${versionError.message}`);
+        throw new Error(`gh act extension was installed but cannot be verified: ${versionError.message}`);
     }
 }

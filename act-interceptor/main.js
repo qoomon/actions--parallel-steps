@@ -13,14 +13,19 @@ if (step === 'Pre') {
     // --- end pre-stage ---
     {
         console.log('__::Interceptor::Pre::End::');
+        core.debug(`Pre stage ended for job ${actJobId}`);
     }
 
     const stage = 'Main';
+    core.debug(`Waiting for ${stage} stage trigger for job ${actJobId}`);
     const action = await untilStageTrigger(config.host.tempDir, stage, actJobId);
+    core.debug(`Received stage trigger action: "${action}" for job ${actJobId}`);
     if(action === 'skip') {
+        core.debug(`Skipping ${stage} stage for job ${actJobId}`);
         process.exit(1); // cancel the job to skip the main stage
     }
     console.log(`__::Interceptor::${stage}::Start::`);
+    core.debug(`${stage} stage started for job ${actJobId}`);
 } else if (step === 'Post') {
     const stage = 'Main';
     console.log(`__::Interceptor::${stage}::End::`);
