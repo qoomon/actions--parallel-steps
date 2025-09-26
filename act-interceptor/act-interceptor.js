@@ -14,29 +14,39 @@ export async function untilStageTrigger(tempDir, stage, actJobId, timeoutMs = 30
 
     core.debug(`Waiting for stage trigger file: ${filePath}`);
     
+    let watcher = null;
+    const cleanupWatcher = async () => {
+        if (watcher) {
+            try {
+                await watcher.return();
+                watcher = null;
+            } catch (error) {
+                core.debug(`Error closing file watcher: ${error.message}`);
+            }
+        }
+    };
+
     const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error(`Timeout waiting for stage trigger file: ${filePath}`)), timeoutMs);
+        setTimeout(() => {
+            cleanupWatcher();
+            reject(new Error(`Timeout waiting for stage trigger file: ${filePath}`));
+        }, timeoutMs);
     });
     
     const watcherPromise = (async () => {
-        const watcher = fs.promises.watch(dirname);
         try {
             await fs.promises.access(filePath);
             core.debug(`Stage trigger file already exists: ${filePath}`);
+            return;
         } catch (e) {
             core.debug(`Watching for stage trigger file creation: ${filePath}`);
+            watcher = fs.promises.watch(dirname);
             for await (const {eventType, filename} of watcher) {
                 core.debug(`File system event: ${eventType} for ${filename}`);
                 if (filename === basename && eventType === 'rename') {
                     core.debug(`Stage trigger file created: ${filePath}`);
                     break;
                 }
-            }
-        } finally {
-            try {
-                await watcher.return();
-            } catch (error) {
-                core.debug(`Error closing file watcher: ${error.message}`);
             }
         }
     })();
@@ -46,6 +56,8 @@ export async function untilStageTrigger(tempDir, stage, actJobId, timeoutMs = 30
     } catch (error) {
         core.error(`Error waiting for stage trigger: ${error.message}`);
         throw error;
+    } finally {
+        await cleanupWatcher();
     }
 
     try {
