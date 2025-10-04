@@ -10,7 +10,7 @@ import {EOL} from "node:os";
 import TailFile from "@logdna/tail-file";
 import * as actInterceptor from "./act-interceptor/act-interceptor.js";
 
-export const GH_ACT_VERSION = '0.2.79';
+export const GH_ACT_VERSION = '0.2.82';
 
 const ACTION_ENV = Object.fromEntries(Object.entries(process.env)
     .filter(([key]) => {
