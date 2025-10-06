@@ -8,5 +8,8 @@ await installDependencies()
         process.exitCode = ExitCode.Failure;
         if (error?.message) {
             core.setFailed(error.message);
+        } else {
+            core.setFailed("Action failed with unknown error");
         }
+        core.debug(`Full error details: ${error?.stack || error}`);
     });
