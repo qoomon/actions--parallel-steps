@@ -4,7 +4,7 @@
     "test": "echo \"No test specified\""
   },
   "dependencies": {
-    "@actions/core": "^1.11.1",
+    "@actions/core": "^2.0.1",
     "@actions/github": "^6.0.1",
     "@logdna/tail-file": "^4.0.2",
     "yaml": "^2.8.2"
