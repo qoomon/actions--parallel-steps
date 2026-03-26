@@ -22,6 +22,8 @@ const ACTION_ENV = Object.fromEntries(Object.entries(process.env)
             'GITHUB_PATH',
             'GITHUB_STEP_SUMMARY',
             'GITHUB_STATE',
+            // secrets — passed via --secret-file, not as plain env vars
+            'GITHUB_TOKEN',
         ].includes(key);
     }));
 
@@ -135,7 +137,8 @@ export async function run(stage) {
 
     if (stage === 'Pre') {
         await fs.writeFile(actLogFilePath, ''); // ensure the act log file exists
-        await startAct(steps, inputs.defaults, inputs.githubToken, actLogFilePath);
+        const actPid = await startAct(steps, inputs.defaults, inputs.githubToken, actLogFilePath);
+        core.saveState('act-pid', actPid);
     } else {
         const stageOrder = ['Pre', 'Main', 'Post'];
         const previousStage = stageOrder[stageOrder.indexOf(stage) - 1];
@@ -349,10 +352,12 @@ export async function run(stage) {
 
     if (stage === 'Post') {
         const actPid = parseInt(core.getState('act-pid'));
-        try {
-            process.kill(actPid)
-        } catch (error) {
-            core.debug(`Failed to kill act process with PID ${actPid}: ${error.message}`);
+        if (actPid > 0) {
+            try {
+                process.kill(actPid);
+            } catch (error) {
+                core.debug(`Failed to kill act process with PID ${actPid}: ${error.message}`);
+            }
         }
     }
 
@@ -506,8 +511,12 @@ async function startAct(steps, defaults, githubToken, logFilePath) {
 
     };
     const actInterceptorConfigPath = path.join(ACTION_STEP_TEMP_DIR, 'steps-config.json');
-    await fs.writeFile(actInterceptorConfigPath, JSON.stringify(actInterceptorConfig));
+    await fs.writeFile(actInterceptorConfigPath, JSON.stringify(actInterceptorConfig), {mode: 0o600});
 
+    // Write the GitHub token to a secret file with restrictive permissions so
+    // it is not visible in process listings (as it would be with --secret KEY=VALUE).
+    const secretsFilePath = path.join(ACTION_STEP_TEMP_DIR, '.act-secrets');
+    await fs.writeFile(secretsFilePath, `GITHUB_TOKEN=${githubToken}\n`, {mode: 0o600});
 
     const workflow = {
         on: process.env["GITHUB_EVENT_NAME"],
@@ -551,7 +560,7 @@ async function startAct(steps, defaults, githubToken, logFilePath) {
     const workflowFilePath = path.join(ACTION_STEP_TEMP_DIR, 'steps-workflow.yaml');
     const workflowYaml = YAML.stringify(workflow);
     TRACE && console.log('act step workflow:\n', colorize(workflowYaml, 'green'))
-    await fs.writeFile(workflowFilePath, workflowYaml);
+    await fs.writeFile(workflowFilePath, workflowYaml, {mode: 0o600});
 
     const actLogFile = await fs.open(logFilePath, 'w');
     // noinspection JSCheckFunctionSignatures, SpellCheckingInspection
@@ -564,7 +573,7 @@ async function startAct(steps, defaults, githubToken, logFilePath) {
             "--local-repository", "__/act-interceptor@local" + "=" + `${__dirname}/act-interceptor`,
             "--eventpath", process.env["GITHUB_EVENT_PATH"],
             "--actor", process.env["GITHUB_ACTOR"],
-            "--secret", `GITHUB_TOKEN=${githubToken}`,
+            "--secret-file", secretsFilePath,
             "--no-skip-checkout",
 
             // TODO check if needed
@@ -775,12 +784,12 @@ export async function installDependencies() {
     const actVersionTag = `v${GH_ACT_VERSION}`;
     // noinspection SpellCheckingInspection
     core.debug(`Installing gh cli extension nektos/gh-act@${actVersionTag} ...`);
-    child_process.execSync(`gh extension install https://github.com/nektos/gh-act --pin ${actVersionTag}`, {
+    child_process.execFileSync('gh', ['extension', 'install', 'https://github.com/nektos/gh-act', '--pin', actVersionTag], {
         stdio: 'inherit',
         env: {...process.env, GH_TOKEN: githubToken}
     });
 
-    const installedActVersion = child_process.execSync("gh act --version").toString().trim()
+    const installedActVersion = child_process.execFileSync('gh', ['act', '--version']).toString().trim()
         .split(/\s/).at(-1);
     if (installedActVersion !== GH_ACT_VERSION) {
         core.warning(`Installed gh act version (${installedActVersion}) does not match expected version (${GH_ACT_VERSION}).`);
