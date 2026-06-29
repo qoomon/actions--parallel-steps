@@ -1,8 +1,8 @@
 # Parallel Steps &nbsp; [![starline](https://starlines.qoo.monster/assets/qoomon/actions--parallel-steps)](https://github.com/qoomon/starline)
 [![Actions](https://img.shields.io/badge/qoomon-GitHub%20Actions-blue)](https://github.com/qoomon/actions)
 
-> [!NOTE]  
-> GitHub is about to implement a native parallel steps implementations see [GitHub Roadmap](https://github.com/github/roadmap/issues/1191)
+> [!IMPORTANT]  
+> GitHub added [native support for parallel steps](https://github.blog/changelog/2026-06-25-actions-steps-can-now-be-run-in-parallel/)
 
 With this action, you can run steps in parallel within a GitHub Actions workflow job. 
 
