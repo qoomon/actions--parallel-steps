@@ -4,6 +4,8 @@
 > [!IMPORTANT]  
 > GitHub added [native support for parallel steps](https://github.blog/changelog/2026-06-25-actions-steps-can-now-be-run-in-parallel/)
 
+---
+
 With this action, you can run steps in parallel within a GitHub Actions workflow job. 
 
 You can even control the execution order of the steps by defining dependencies between them. 
