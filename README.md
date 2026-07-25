@@ -1,4 +1,4 @@
-# Parallel Steps &nbsp; [![starline](https://starlines.qoo.monster/assets/qoomon/actions--parallel-steps)](https://github.com/qoomon/starline)
+# Parallel Steps &nbsp; [![starline](https://raw.githubusercontent.com/qoomon/qoomon/refs/heads/main/starlines/qoomon/actions--parallel-steps/starline.svg)](https://github.com/qoomon/starlines)
 [![Actions](https://img.shields.io/badge/qoomon-GitHub%20Actions-blue)](https://github.com/qoomon/actions)
 
 > [!IMPORTANT]  
